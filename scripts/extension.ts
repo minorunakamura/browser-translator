@@ -9,6 +9,7 @@ export interface OptionsInput {
   screenshot: string;
   model?: string;
   mode?: "parallel" | "serial";
+  display?: "replace" | "bilingual";
   glossary?: string;
 }
 
@@ -23,7 +24,7 @@ export interface OptionsResult {
 const settled = (t: string) => t !== "" && t !== "取得中…";
 
 // Opens chrome-extension://<id>/options.html in a new tab, fills the form like a user (URL, reload models,
-// select, radio, textarea), presses 保存 and returns what the page showed and what was stored.
+// select, radios, textarea), presses 保存 and returns what the page showed and what was stored.
 export async function applyOptions(
   cdp: CdpPipe,
   extensionId: string,
@@ -77,6 +78,8 @@ export async function applyOptions(
       if (input.model !== undefined) document.getElementById("model").value = input.model;
       if (input.mode !== undefined)
         document.querySelector('input[name="mode"][value="' + input.mode + '"]').click();
+      if (input.display !== undefined)
+        document.querySelector('input[name="display"][value="' + input.display + '"]').click();
       if (input.glossary !== undefined) document.getElementById("glossary").value = input.glossary;
       document.getElementById("save-status").textContent = "";
       document.querySelector('button[type="submit"]').click();

@@ -137,6 +137,8 @@ const BADGE: Record<StatusMessage["state"], { text: string; color: string }> = {
   error: { text: "ERR", color: "#d93025" },
 };
 
+// Per-tab badges: Chrome clears them when the tab loads a new document (reload, normal navigation), which also
+// ends translation mode; an SPA URL change keeps the document, the mode and the badge.
 async function setBadge(
   tabId: number,
   state: StatusMessage["state"],
@@ -150,11 +152,6 @@ async function setBadge(
 
 chrome.action.onClicked.addListener((tab) => {
   if (tab.id !== undefined) toggleTab(tab.id).catch(console.error);
-});
-
-// Reloads and normal navigation drop the content script, so the mode ends and the badge must follow.
-chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === "loading") setBadge(tabId, "off").catch(console.error);
 });
 
 chrome.runtime.onMessage.addListener(
