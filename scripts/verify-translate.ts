@@ -1,7 +1,8 @@
 // Work Item 2: drive translation mode on a real page through the toolbar action and check the DOM.
-// Usage: node scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl]
-//   translate:   llama-server must be listening on http://127.0.0.1:8080 (the extension default).
-//   unreachable: nothing may be listening on 127.0.0.1:8080; expects the connection error display.
+// Usage: node scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl] [--server=<url>]
+//   --server: llama-server URL saved on the options page first; without it the default http://127.0.0.1:8080 is used.
+//   translate:   llama-server must be listening on that URL.
+//   unreachable: nothing may be listening on that URL; expects the connection error display.
 // Run `pnpm run build` first so dist/ is up to date.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -13,13 +14,20 @@ import {
   loadExtensionAndAttachWorker,
   sleep,
 } from "./cdp.ts";
+import { applyOptions } from "./extension.ts";
 
 const REFERENCE_PAGE =
   "https://huggingface.co/blog/ibm-research/an-indic-voice-agent-with-cuga";
-const [mode, evidenceDir, pageUrl = REFERENCE_PAGE] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const serverUrl = args
+  .find((a) => a.startsWith("--server="))
+  ?.slice("--server=".length);
+const [mode, evidenceDir, pageUrl = REFERENCE_PAGE] = args.filter(
+  (a) => !a.startsWith("--server="),
+);
 if ((mode !== "translate" && mode !== "unreachable") || !evidenceDir) {
   console.error(
-    "usage: node scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl]",
+    "usage: node scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl] [--server=<url>]",
   );
   process.exit(2);
 }
@@ -98,6 +106,7 @@ const chrome = launchChrome({ extraArgs: ["--window-size=1280,1000"] });
 const record: Record<string, unknown> = {
   mode,
   pageUrl,
+  serverUrl: serverUrl ?? "default",
   extensionPath,
   startedAt: new Date().toISOString(),
 };
@@ -110,6 +119,14 @@ try {
     extensionPath,
   );
   record.extensionId = extensionId;
+  if (serverUrl) {
+    const options = await applyOptions(cdp, extensionId, sw, {
+      url: serverUrl,
+      screenshot: join(evidenceDir, `${mode}-options.png`),
+    });
+    record.options = options;
+    checks.optionsSaved = options.stored.url === serverUrl;
+  }
 
   const { targetId }: { targetId: string } = await cdp.send(
     "Target.createTarget",
@@ -166,7 +183,11 @@ try {
     record.notice = notice;
     record.badge = await badge();
     await screenshot(cdp, page, "unreachable-1-on.png");
-    checks.noticeShown = notice.some((t) => t.includes("接続できません"));
+    checks.noticeShown = notice.some(
+      (t) =>
+        t.includes("接続できません") &&
+        t.includes(serverUrl ?? "http://127.0.0.1:8080"),
+    );
     checks.badgeError = record.badge === "ERR";
   } else {
     await sleep(1000);

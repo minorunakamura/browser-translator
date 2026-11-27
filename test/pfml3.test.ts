@@ -23,6 +23,51 @@ describe("buildPfml3Prompt", () => {
     );
   });
 
+  test("serial mode lists the previous input/output pair after context, with form only on the current output", () => {
+    expect(
+      buildPfml3Prompt("Second <c1>run()</c1>.", "Page: Demo", {
+        history: [
+          {
+            source: "First <b1>one</b1>.",
+            translation: "最初の<b1>もの</b1>です。",
+          },
+        ],
+      }),
+    ).toBe(
+      "<|plamo:tag|>dataset<|plamo:msg|>translation" +
+        "<|plamo:tag|>context<|plamo:msg|>Page: Demo" +
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>First <b1>one</b1>." +
+        "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>最初の<b1>もの</b1>です。" +
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Second <c1>run()</c1>." +
+        "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>polite<|plamo:msg|>",
+    );
+  });
+
+  test("puts the glossary right before the current input, after the history", () => {
+    expect(
+      buildPfml3Prompt("Use the agent harness.", "", {
+        history: [{ source: "Hi.", translation: "こんにちは。" }],
+        glossary: [
+          { source: "agent harness", target: "エージェント基盤" },
+          { source: "pi", target: "パイ" },
+        ],
+      }),
+    ).toBe(
+      "<|plamo:tag|>dataset<|plamo:msg|>translation" +
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Hi." +
+        "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>こんにちは。" +
+        "<|plamo:tag|>glossary<|plamo:index|>agent harness<|plamo:item|>エージェント基盤<|plamo:index|>pi<|plamo:item|>パイ" +
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Use the agent harness." +
+        "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>polite<|plamo:msg|>",
+    );
+  });
+
+  test("leaves out the glossary element when no term matched and adds nothing for empty options", () => {
+    expect(
+      buildPfml3Prompt("Hi.", "Page: Demo", { history: [], glossary: [] }),
+    ).toBe(buildPfml3Prompt("Hi.", "Page: Demo"));
+  });
+
   test("stops at the next PFML3 tag or a new sequence", () => {
     expect(PLAMO_STOP).toEqual(["<|plamo:tag|>", "<|plamo:bos|>"]);
   });
