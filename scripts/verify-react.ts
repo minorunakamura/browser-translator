@@ -15,7 +15,11 @@ import {
   loadExtensionAndAttachWorker,
   sleep,
 } from "./cdp.ts";
-import { applyOptions, recordWorkerRequests } from "./extension.ts";
+import {
+  applyOptions,
+  pfml3Elements,
+  recordWorkerRequests,
+} from "./extension.ts";
 
 const REACT_PAGE = "https://react.dev/learn";
 const args = process.argv.slice(2);
@@ -75,7 +79,14 @@ const OBSERVE = `(() => {
     articleCandidates: article.length,
     articleTranslated: article.filter(shows).length,
     articleFailed: article.filter(failed).length,
+    failedParagraphs: article.filter(failed).map((el) => ({
+      text: bare(el).slice(0, 200),
+      marker: [...el.children].find((c) => c.matches(ins) && (c.title || "").startsWith("翻訳できませんでした")).title,
+    })),
     articleUntranslated: article.filter((el) => !shows(el) && !failed(el)).map((el) => bare(el).slice(0, 100)),
+    // Paragraphs whose code holds "<" (e.g. <MyButton />): sent escaped, so they are translated like any other.
+    codeWithLt: article.filter((el) => [...el.querySelectorAll("code")].some((c) => !c.closest(ins) && c.textContent.includes("<")))
+      .map((el) => ({ shown: shows(el), failed: failed(el), text: bare(el).slice(0, 100) })),
     notJapanese: replaced.filter((el) => !ja.test(el.textContent)).map((el) => el.textContent.slice(0, 100)),
     replacedCount: replaced.length,
     bilingualCount: added.length,
@@ -94,7 +105,9 @@ interface Observation {
   articleCandidates: number;
   articleTranslated: number;
   articleFailed: number;
+  failedParagraphs: { text: string; marker: string }[];
   articleUntranslated: string[];
+  codeWithLt: { shown: boolean; failed: boolean; text: string }[];
   replacedCount: number;
   bilingualCount: number;
   notJapanese: string[];
@@ -265,6 +278,9 @@ try {
   checks.badgeOn = record.badgeOn === "ON";
   checks.translated = translatedEnough(translated);
   checks.noNestedInserted = translated.nestedInserted === 0;
+  checks.codeWithLtTranslated =
+    translated.codeWithLt.length > 0 &&
+    translated.codeWithLt.every((x) => x.shown && !x.failed);
   if (display === "bilingual")
     checks.bilingualBelow =
       translated.replacedCount === 0 &&
@@ -496,6 +512,27 @@ try {
   record.pageErrors = pageErrors;
   record.navigations = navigations;
   record.totalCompletions = completions().length;
+  // Paragraphs whose first response was rejected (tag mismatch or cut off): the sent input and both responses.
+  record.retried = completions()
+    .filter((r) => r.body?.temperature === 0.3)
+    .map((r) => {
+      const input = pfml3Elements(r.body?.prompt ?? "")
+        .filter((e) => e.name === "input")
+        .at(-1)?.body;
+      const first = completions().findLast(
+        (q) =>
+          q.started < r.started &&
+          q.body?.temperature === 0 &&
+          pfml3Elements(q.body?.prompt ?? "")
+            .filter((e) => e.name === "input")
+            .at(-1)?.body === input,
+      );
+      return {
+        input,
+        response: first?.responseText,
+        retryResponse: r.responseText,
+      };
+    });
   // Recorded, not required (React may log its own errors on a page the extension changed).
   record.errorsAfterTranslation = pageErrors.filter(
     (e) => e.at !== "load",

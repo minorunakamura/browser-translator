@@ -21,6 +21,7 @@ import {
   pfml3Elements,
   recordWorkerRequests,
 } from "./extension.ts";
+import { restoreTags } from "../src/text.ts";
 
 const REFERENCE_PAGE =
   "https://huggingface.co/blog/ibm-research/an-indic-voice-agent-with-cuga";
@@ -78,7 +79,17 @@ interface SentPrompt {
   glossary: { source: string; target: string }[];
   input: string;
   response: string | undefined;
+  // Whether content.ts would use the response: complete (not cut at max_tokens) and its tags restore.
+  accepted: boolean;
 }
+
+// The sent opening tags as restoreTags' map; whether a response is accepted depends only on these tags.
+const sentTags = (input: string) =>
+  Object.fromEntries(
+    [...input.matchAll(/<([a-z][a-z0-9-]*)(?: id="\d+")?>/g)].map(
+      ([tag, kind]) => [tag, { kind, children: [] }],
+    ),
+  );
 
 function toSentPrompt(r: WorkerRequest): SentPrompt {
   const els = pfml3Elements(r.body?.prompt ?? "");
@@ -94,10 +105,22 @@ function toSentPrompt(r: WorkerRequest): SentPrompt {
     glossary: els.find((e) => e.name === "glossary")?.terms ?? [],
     input: inputs.at(-1)?.body ?? "",
     response: r.responseText,
+    accepted:
+      r.responseText !== undefined &&
+      !r.failed &&
+      r.finishReason !== "length" &&
+      restoreTags(r.responseText, sentTags(inputs.at(-1)?.body ?? "")).ok,
   };
 }
 
-const plainText = (s: string) => s.replace(/<\/?[a-z]\d+>/g, "");
+// The sent paragraph without its inline tags (<a>, <code id="2">, </strong>) and with &amp; &lt; &gt; as characters.
+const plainText = (s: string) =>
+  s
+    .replace(/<\/?[a-z][a-z0-9-]*(?: id="\d+")?>/g, "")
+    .replace(
+      /&(?:amp|lt|gt);/g,
+      (e) => ({ "&amp;": "&", "&lt;": "<", "&gt;": ">" })[e] ?? e,
+    );
 
 const chrome = launchChrome({ extraArgs: ["--window-size=1280,1000"] });
 const record: Record<string, unknown> = {
@@ -286,7 +309,8 @@ try {
   const prompts2 = completions(run2.sent).toSorted(
     (a, b) => a.started - b.started,
   );
-  // Every history pair must be an earlier request's input and the response the model returned for it.
+  // Every history pair must be an earlier request's input and the response the model returned for it, and it
+  // must be the latest earlier request whose response content.ts accepted (it sets the history only then).
   const historyChecks = prompts2.map((p, i) => {
     const h = p.history[0];
     const earlier = prompts2.slice(0, i);
@@ -299,7 +323,7 @@ try {
       i,
       hasHistory: !!h,
       fromIndex,
-      previous: !!h && fromIndex === i - 1,
+      previous: !!h && fromIndex === earlier.findLastIndex((e) => e.accepted),
     };
   });
   const firstWithHistory = historyChecks.findIndex((c) => c.hasHistory);
@@ -310,16 +334,27 @@ try {
     historyUnmatched: historyChecks.filter(
       (c) => c.hasHistory && c.fromIndex === -1,
     ),
+    rejected: prompts2.filter((p) => !p.accepted).length,
     samplePrompts: prompts2.slice(0, 3),
   };
   checks.serialOneAtATime =
     run2.page.translated.length > 0 && maxInFlight(run2.sent) === 1;
   checks.serialFirstModel = prompts2.every((p) => p.model === serverModels[0]);
-  // History starts once the first paragraph was translated and then always points at the request just before.
+  // History starts once the first paragraph was translated and then always points at the latest accepted
+  // request; a rejected response (retried or marked) never appears as history.
   checks.serialHistory =
     firstWithHistory >= 1 &&
     historyChecks.slice(firstWithHistory).every((c) => c.previous) &&
-    prompts2.every((p) => p.history.length <= 1);
+    prompts2.every((p) => p.history.length <= 1) &&
+    prompts2.every(
+      (p) =>
+        p.accepted ||
+        !prompts2.some(
+          (q) =>
+            q.history[0]?.source === p.input &&
+            q.history[0]?.translation === p.response,
+        ),
+    );
   checks.serialNoNeighbours = prompts2.every((p) => !hasNeighbours(p));
 
   // Phase 3: back to parallel.

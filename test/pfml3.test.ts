@@ -7,10 +7,12 @@ import {
 
 describe("buildPfml3Prompt", () => {
   test("puts context right after dataset and asks for polite Japanese", () => {
-    expect(buildPfml3Prompt("Hello <b1>world</b1>.", "Page: Demo")).toBe(
+    expect(
+      buildPfml3Prompt("Hello <strong>world</strong>.", "Page: Demo"),
+    ).toBe(
       "<|plamo:tag|>dataset<|plamo:msg|>translation" +
         "<|plamo:tag|>context<|plamo:msg|>Page: Demo" +
-        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Hello <b1>world</b1>." +
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Hello <strong>world</strong>." +
         "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>polite<|plamo:msg|>",
     );
   });
@@ -25,20 +27,20 @@ describe("buildPfml3Prompt", () => {
 
   test("serial mode lists the previous input/output pair after context, with form only on the current output", () => {
     expect(
-      buildPfml3Prompt("Second <c1>run()</c1>.", "Page: Demo", {
+      buildPfml3Prompt("Second <code>run()</code>.", "Page: Demo", {
         history: [
           {
-            source: "First <b1>one</b1>.",
-            translation: "最初の<b1>もの</b1>です。",
+            source: "First <strong>one</strong>.",
+            translation: "最初の<strong>もの</strong>です。",
           },
         ],
       }),
     ).toBe(
       "<|plamo:tag|>dataset<|plamo:msg|>translation" +
         "<|plamo:tag|>context<|plamo:msg|>Page: Demo" +
-        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>First <b1>one</b1>." +
-        "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>最初の<b1>もの</b1>です。" +
-        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Second <c1>run()</c1>." +
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>First <strong>one</strong>." +
+        "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>最初の<strong>もの</strong>です。" +
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Second <code>run()</code>." +
         "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>polite<|plamo:msg|>",
     );
   });

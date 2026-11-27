@@ -17,7 +17,7 @@
   - `preUnchanged`: `pre` の中身が翻訳前と同じで、日本語も拡張の目印もない。
   - `knowledgeEngine` / `guardrails`: 「The knowledge engine.」「Keep guardrails cheap.」の段落で `code` が `agent.knowledge.search()` / `OFF_TOPIC` のまま 1 つ残り、`strong` が 1 つ残る。自然な位置かは `observed.*.html` とスクリーンショットで目で確かめる。
   - `cugaLink`: 「CUGA (ConfigUrable …」の段落に `href="https://cuga.dev"` の `a`（中身 CUGA）が残る。
-  - `noLeftoverTags`: 訳された段落に `<a1>` などのタグ文字列が残っていない（タグの抜け・重複がある訳は採用されないため、目印のない段落は抜け・重複がない）。`observed.failed` に訳せなかった段落（原文のまま ⚠ の目印）があれば一覧される。
+  - `noLeftoverTags`: 訳された段落の `code` の外に、送ったタグの文字列（`<a>`・`<code id="2">`・`</strong>` など）が残っていない（`code` の中の `<h1>` などは原文の文字なので数えない。タグの抜け・重複がある訳は採用されないため、目印のない段落は抜け・重複がない）。`observed.failed` に訳せなかった段落（原文のまま ⚠ の目印）があれば一覧される。
   - `hoverShowsOriginal`: 訳した段落の `title` が原文（マウスを乗せるとツールチップで原文が出る）。
   - `offRestoresDom` / `offBadgeCleared`: オフ後、対象の全段落と `pre` の `textContent` と `outerHTML`（要素自身の `title` 属性を含む）が翻訳前と一致し、拡張の目印（`data-browser-translator`）が 0、バッジが空。
 - **証拠**: `translate.json`、`translate-options.png`（`--server` のとき）、`translate-0-before.png`、`translate-1-top.png`、`translate-2-{cuga,knowledge,guardrails}.png`、`translate-3-off.png`。
@@ -44,7 +44,7 @@
 - **操作**: `node scripts/verify-react.ts replace <evidenceDir> --server=http://127.0.0.1:18080` と `node scripts/verify-react.ts bilingual <evidenceDir> --server=http://127.0.0.1:18080`。送信は service worker のセッションの Network で数える。リンクは CDP の `Input.dispatchMouseEvent` で押す。
 - **期待と観測**（`react-<display>.json` の `checks`）:
   - `optionsSaved`・`badgeOn`: 設定が入り、オンでバッジ `ON`。
-  - `translated`: `article` の段落（content.ts と同じ規則）がすべて訳されたか ⚠。`noNestedInserted`: 差し込み要素の中に差し込み要素がない。`bilingualBelow`（対訳のとき）: 置き換えた段落 0、訳文はすべて段落の最後の `display:block` の子。
+  - `translated`: `article` の段落（content.ts と同じ規則）がすべて訳されたか ⚠。`codeWithLtTranslated`: `code` の中に `<` を含む段落（例 `<MyButton />`）が 1 つ以上あり、すべて ⚠ ではなく訳された（`translated.codeWithLt`）。`noNestedInserted`: 差し込み要素の中に差し込み要素がない。`bilingualBelow`（対訳のとき）: 置き換えた段落 0、訳文はすべて段落の最後の `display:block` の子。
   - `stillTranslatedAfterIdle`: 5 秒待ち、最後までスクロールし、リンクにマウスを乗せ、さらに 5 秒待った後も訳されたまま。
   - `addedTranslated` / `addedNoLoop`: ページ側で `article` に足した英語の段落が日本語になり、そのための送信が 1〜2 回（訳し直しを含む）で止まる。
   - `redrawnTranslated` / `redrawnNoLoop`: ページがその段落を自分の子の複製で描き直す（差し込み要素は落ちる）と、日本語の表示が戻る。対訳では消えた訳文を訳し直す送信が 1〜2 回で止まり、置き換えでは本文が訳文のままなので送信 0。
@@ -55,7 +55,7 @@
   - `reloadEndsMode`: オンにした後リロードすると、目印 0、`window` の目印が消え（新しい document）、バッジが空。
   - `backEndsMode`: オンにして目印が付いた後、同じタブで通常の移動（`/blog` へ `Page.navigate`）をして履歴で戻る（`Page.navigateToHistoryEntry`）と、目印 0、バッジが空で、ボタンを押すとバッジ `ON`（オンになる）。`back.restoredFromCache`（`window` の目印が残った＝ bfcache から戻った）と `back.bfcacheNotUsed`（`Page.backForwardCacheNotUsed` の理由）を記録する。
   - `allRequestsToServer`: 送信は設定の URL か、設定画面を開いたときの既定 URL の `/v1/models` だけ。
-- **記録値**（checks ではない。`run.md` に書く）: `idleRequests`（待つ・スクロール・ホバーの間の翻訳の送信数。ページが訳文を原文に戻すと content.ts が目印を外して訳し直すため、戻しはここに出る）と `shownBeforeIdle` / `shownAfterIdle`（置き換えた段落と差し込んだ訳文の数。戻しが残れば減る）、`pageErrors` / `errorsAfterTranslation`（ページの例外と `console.error`。ハイドレーションエラーなど）、`translated.horizontalOverflow` / `scrollHeight`（崩れの目安）、`spaRequests`、`navigations`。崩れの有無はスクリーンショットを目で確かめる。崩れや戻しがあった場合は、対訳で読めるかを `react-bilingual-*` で確かめる。
+- **記録値**（checks ではない。`run.md` に書く）: `translated.failedParagraphs` / `spa.failedParagraphs`（⚠ の段落と目印の `title`）と `retried`（訳し直した段落の送った入力と、最初と訳し直しの応答。⚠ の原因がモデルの出力か送り方の誤りかを見分ける）、`idleRequests`（待つ・スクロール・ホバーの間の翻訳の送信数。ページが訳文を原文に戻すと content.ts が目印を外して訳し直すため、戻しはここに出る）と `shownBeforeIdle` / `shownAfterIdle`（置き換えた段落と差し込んだ訳文の数。戻しが残れば減る）、`pageErrors` / `errorsAfterTranslation`（ページの例外と `console.error`。ハイドレーションエラーなど）、`translated.horizontalOverflow` / `scrollHeight`（崩れの目安）、`spaRequests`、`navigations`。崩れの有無はスクリーンショットを目で確かめる。崩れや戻しがあった場合は、対訳で読めるかを `react-bilingual-*` で確かめる。
 - **証拠**: `react-<display>.json`、`react-<display>-options.png`、`react-<display>-{0-before,1-translated,2-after-idle,3-added,4-spa,5-off,6-reload,7-back}.png`。
 - **注意**: react.dev の内容が変わると候補の段落数やリンクが変わる。リンクが無くなったら `--link=<path>` で別のページ内リンクを渡す。バッジは Chrome がタブごとに持ち、document の移動（リロード・通常の移動・bfcache からの戻り）で消える。SPA の移動では消えない。
 
@@ -79,7 +79,7 @@
   - `modelUsed`: (1) の `/v1/completions` の `model` がすべて選んだ 2 番目のモデル。`serialFirstModel`: 「先頭のモデルを使う」に戻すと `/v1/models` の先頭。
   - `parallelTranslated` / `parallelAgain`: 並列は同時送信が 2 以上、context に `Previous/Next paragraph` があり、履歴がない。直列から戻しても同じ。
   - `serialOneAtATime`: 直列は送信の重なりがない（同時 1）。`serialNoNeighbours`: context に前後の段落がない（ページの説明だけ）。
-  - `serialHistory`: 最初の段落は履歴なし、2 件目以降は直前に送った段落の入力と、モデルが返した訳文（タグ付きのまま）の 1 組が `input`/`output` として入る（履歴が始まって以降のすべての送信で直前の送信と一致すること。`phase2.historyFromPrevious` が一致した数）。
+  - `serialHistory`: 最初の段落は履歴なし、2 件目以降は、それより前の送信のうち採用された（応答が切れておらず、`src/text.ts` の `restoreTags` で送ったタグに対して復元できる）最新の送信の入力と、モデルが返した訳文（タグ付きのまま）の 1 組だけが `input`/`output` として入る。採用されなかった応答（訳し直しの対象や ⚠ になった応答）は履歴に一度も現れない（`phase2.historyFromPrevious` が一致した数、`phase2.rejected` が採用されなかった送信の数）。
   - `glossaryOnlyWhereMatched`: `harness` を語として含む段落のプロンプトだけに `glossary`（`harness`）があり、`pi` はどのプロンプトにも入らない（基準ページに単語の pi はない）。
   - `piNotInApi`: `API` を含む段落（「…speech APIs…」）のプロンプトに `pi` の glossary がない。
   - `glossaryApplied`: `harness` を含む段落の訳文がすべて訳語「実行基盤」を含む（`phase1.harnessTranslations`）。

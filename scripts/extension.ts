@@ -104,10 +104,11 @@ export interface WorkerRequest {
   failed?: string;
   body?: { model?: string; prompt?: string; temperature?: number };
   responseText?: string;
+  finishReason?: string;
 }
 
 // Records the service worker's network requests (Network domain on the worker session) with their timing,
-// JSON body and, for completions, choices[0].text of the response.
+// JSON body and, for completions, choices[0].text and finish_reason of the response.
 export async function recordWorkerRequests(
   cdp: CdpPipe,
   worker: string,
@@ -134,8 +135,11 @@ export async function recordWorkerRequests(
       cdp
         .send("Network.getResponseBody", { requestId: p.requestId }, worker)
         .then(({ body }: { body: string }) => {
-          if (r.url.endsWith("/v1/completions"))
-            r.responseText = JSON.parse(body).choices?.[0]?.text?.trim();
+          if (r.url.endsWith("/v1/completions")) {
+            const choice = JSON.parse(body).choices?.[0];
+            r.responseText = choice?.text?.trim();
+            r.finishReason = choice?.finish_reason;
+          }
         })
         .catch((e: unknown) => {
           r.failed = `response body: ${String(e)}`;
