@@ -76,6 +76,10 @@ async function init(): Promise<void> {
     'input[name="mode"]',
   ))
     radio.checked = radio.value === settings.mode;
+  for (const radio of form.querySelectorAll<HTMLInputElement>(
+    'input[name="display"]',
+  ))
+    radio.checked = radio.value === settings.display;
   glossaryInput.value = formatGlossary(settings.glossary);
   await reloadModels(settings.model);
 }
@@ -91,12 +95,14 @@ form.addEventListener("submit", (event) => {
     saveStatus.textContent = "URL を解析できません。保存していません";
     return;
   }
-  const mode =
-    new FormData(form).get("mode") === "serial" ? "serial" : "parallel";
+  const data = new FormData(form);
+  const mode = data.get("mode") === "serial" ? "serial" : "parallel";
+  const display = data.get("display") === "bilingual" ? "bilingual" : "replace";
   const settings: Settings = {
     url,
     model: modelSelect.value,
     mode,
+    display,
     glossary: parseGlossary(glossaryInput.value),
   };
   saveStatus.textContent = "";

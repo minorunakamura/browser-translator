@@ -1,6 +1,6 @@
 ---
 name: verify-project
-description: browser-translator（Chrome MV3 拡張 + ローカル llama-server）の実動作確認。dist/ を一時プロファイルの Chrome に読み込み、所有するポートの llama-server（router モード）で基準ページを翻訳し、設定画面の操作・service worker の送信内容・DOM の照合とスクリーンショットを残して後始末する。拡張の翻訳・表示・接続エラー・設定（URL・モデル・送り方・用語集）を変更したときに使う。
+description: browser-translator（Chrome MV3 拡張 + ローカル llama-server）の実動作確認。dist/ を一時プロファイルの Chrome に読み込み、所有するポートの llama-server（router モード）で基準ページと React のページ（react.dev）を翻訳し、設定画面の操作・service worker の送信内容・DOM の照合とスクリーンショットを残して後始末する。拡張の翻訳・表示（置き換え・対訳）・あとから追加された段落・SPA での継続・接続エラー・設定（URL・モデル・送り方・表示方法・用語集）を変更したときに使う。
 ---
 
 # verify-project（browser-translator）
@@ -22,7 +22,7 @@ description: browser-translator（Chrome MV3 拡張 + ローカル llama-server�
 
 1. `lsof -iTCP:8080 -sTCP:LISTEN` と `lsof -iTCP:18080 -sTCP:LISTEN` を確かめる。8080 にいるプロセス（利用者の常駐 llama-server など）は**止めたり使ったりしない**。
 2. 18080 が空いていれば、そこで自分の llama-server を起動する（下記）。使われていれば別の空いたポートを選ぶ（`host_permissions` の都合で `127.0.0.1` か `localhost` に限る）。
-3. helper には `--server=http://127.0.0.1:18080`（`verify-translate.ts`）か第 2 引数（`verify-settings.ts`）で渡す。helper が設定画面で URL を保存してから翻訳する。
+3. helper には `--server=http://127.0.0.1:18080`（`verify-translate.ts`・`verify-react.ts`）か第 2 引数（`verify-settings.ts`）で渡す。helper が設定画面で URL を保存してから翻訳する。
 
 ## 手順
 
@@ -42,13 +42,20 @@ description: browser-translator（Chrome MV3 拡張 + ローカル llama-server�
 5. 翻訳の照合（Feature Map「置き換え翻訳」）:
    `node scripts/verify-translate.ts translate $EVID --server=http://127.0.0.1:18080`
    exit 0 で、`$EVID/translate.json` の `checks` がすべて true。スクリーンショット（`translate-*.png`）を開いて、日本語の本文・`code`・リンクの見た目を目で確かめる。
-6. 接続エラーの表示（Feature Map「接続エラー」）: 自分の llama-server を PID で止め（`kill $(cat $EVID/llama-server.pid)`）、`lsof -iTCP:18080 -sTCP:LISTEN` が空になったのを確かめてから:
+6. 対訳表示（Feature Map「対訳表示（基準ページ）」）:
+   `node scripts/verify-translate.ts bilingual $EVID --server=http://127.0.0.1:18080`
+   exit 0 で、`$EVID/bilingual.json` の `checks` がすべて true。`bilingual-2-*.png` で原文の下に訳文（`code`・強調・リンク付き）が出ていることを目で確かめる。
+7. React のページ（Feature Map「React のページ・あとから追加された段落・SPA・リロード」）:
+   `node scripts/verify-react.ts replace $EVID --server=http://127.0.0.1:18080` と
+   `node scripts/verify-react.ts bilingual $EVID --server=http://127.0.0.1:18080`
+   それぞれ exit 0 で、`react-<display>.json` の `checks` がすべて true。崩れ・戻しの目安（`idleRequests`・`shownBeforeIdle` / `shownAfterIdle`）・bfcache の使用（`back.restoredFromCache`）・ページのエラー（`pageErrors`）は記録値なので、`run.md` に書き、`react-<display>-*.png` を目で確かめる。1 回 2〜3 分（0.8B）。
+8. 接続エラーの表示（Feature Map「接続エラー」）: 自分の llama-server を PID で止め（`kill $(cat $EVID/llama-server.pid)`）、`lsof -iTCP:18080 -sTCP:LISTEN` が空になったのを確かめてから:
    `node scripts/verify-translate.ts unreachable $EVID --server=http://127.0.0.1:18080`
    exit 0 で、`unreachable.json` の `checks` がすべて true。`unreachable-1-on.png` に赤い通知（URL を含む）が写っている。
-7. 実行記録 `$EVID/run.md` を書く: 対象機能と入口、source の版と未コミット変更、前提（Chrome・llama-server の版、モデル）、操作、期待結果と観測結果、成否、未確認の範囲。
-8. 後始末: 自分が起動した llama-server だけを PID で止める（プロセス名で一括終了しない）。Chrome と一時プロファイルは helper が終了時に閉じて消す（`ls -d ${TMPDIR:-/tmp}/bt-chrome-*` で残りが無いか確かめる）。証拠は消さない。後始末の後に `$EVID` の JSON と PNG が読めることを確かめる。
+9. 実行記録 `$EVID/run.md` を書く: 対象機能と入口、source の版と未コミット変更、前提（Chrome・llama-server の版、モデル）、操作、期待結果と観測結果、成否、未確認の範囲。
+10. 後始末: 自分が起動した llama-server だけを PID で止める（プロセス名で一括終了しない）。Chrome と一時プロファイルは helper が終了時に閉じて消す（`ls -d ${TMPDIR:-/tmp}/bt-chrome-*` で残りが無いか確かめる）。証拠は消さない。後始末の後に `$EVID` の JSON と PNG が読めることを確かめる。
 
-手順 5・6 の `--server` を省くと、helper は設定を変えずに既定の `http://127.0.0.1:8080` へ送る（8080 が空いていて自分で起動した場合だけ使う）。
+手順 5・6・8 の `--server` を省くと、helper は設定を変えずに既定の `http://127.0.0.1:8080` へ送る（8080 が空いていて自分で起動した場合だけ使う）。
 
 失敗したら、llama-server が使用可能か（`/v1/models`）と `dist/` が最新かを確かめ直してから再実行する。helper の不具合は helper を直して再実行する。製品の不具合を期待値の緩和で隠さない。
 
@@ -57,7 +64,8 @@ description: browser-translator（Chrome MV3 拡張 + ローカル llama-server�
 - `scripts/cdp.ts`: Chrome の起動（一時プロファイル）、拡張の読み込み、service worker への attach、`Runtime.evaluate`。
 - `scripts/extension.ts`: 設定画面（`chrome-extension://<id>/options.html`）を新しいタブで開き、利用者と同じくフォームを埋めて「保存」を押す `applyOptions`（保存後のスクリーンショットと `chrome.storage.local` の中身を返す）。service worker のセッションで `Network.enable` し、送信の URL・時刻・本文・応答の訳文を記録する `recordWorkerRequests`、同時送信数の `maxInFlight`、PFML3 を要素に分ける `pfml3Elements`。
 - `scripts/verify-settings.ts <evidenceDir> <serverUrl> [pageUrl]`: 1 つの Chrome で、設定画面から (1) URL（末尾 `/` 付きで入力）・2 番目のモデル・並列・用語集 `pi = パイ` / `harness = 実行基盤` を保存して訳す、(2) 直列・先頭のモデルにして訳す、(3) 並列に戻して訳す。送信内容とページを照合して `settings.json` とスクリーンショットを保存する。
-- `scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl] [--server=<url>]`: `--server` があれば先に設定画面でその URL を保存する。新しいタブで基準ページを開き、CDP の `Extensions.triggerAction`（ツールバーのボタンを押したときと同じく `chrome.action.onClicked` が発火する）で翻訳モードを切り替え、DOM を照合して JSON とスクリーンショットを保存する。
+- `scripts/verify-translate.ts <translate|bilingual|unreachable> <evidenceDir> [pageUrl] [--server=<url>]`: `--server` があれば先に設定画面でその URL を保存する（`bilingual` は表示方法「対訳」も保存する）。新しいタブで基準ページを開き、CDP の `Extensions.triggerAction`（ツールバーのボタンを押したときと同じく `chrome.action.onClicked` が発火する）で翻訳モードを切り替え、DOM を照合して JSON とスクリーンショットを保存する。
+- `scripts/verify-react.ts <replace|bilingual> <evidenceDir> --server=<url> [pageUrl] [--link=<path>]`: 設定画面で URL と表示方法を保存し、React のページ（既定 https://react.dev/learn ）で (1) 翻訳、(2) 待つ・スクロール・ホバーの後に React が原文に戻したか、(3) ページ側から段落を 1 つ足して訳されるか（送信が 1〜2 回で止まるか）と、その段落をページが同じ本文で描き直したとき訳文が戻るか、(4) ページ内のリンク（既定 `/learn/describing-the-ui`）を CDP のマウス操作で押して SPA の移動（同じ document のまま）後もバッジ `ON` で新しい内容が訳されるか、(5) 変化がない間に送信が出ないか、(6) オフ、(7) オンにしてリロードで翻訳モードが終わるか、(8) オンにして通常の移動の後に履歴で戻ったとき（bfcache を含む）翻訳モードが終わっているか、を観測して `react-<display>.json` とスクリーンショットを保存する。
 - `scripts/verify-connection.ts`: Work Item 1 の接続確認（service worker から `/v1/models` と `/v1/completions`）。
 
 `Extensions.triggerAction` は CDP からの発火で、画面上のボタンを物理的に押すわけではない。実際のボタンのクリックは、ヘッドありの Chrome で人が少なくとも 1 回確かめる（Feature Map の注意を参照）。

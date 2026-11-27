@@ -109,6 +109,12 @@
         <label><input type="radio" name="mode" value="serial" /> 直列（直前の段落の原文と訳文を翻訳履歴として、順に送る）</label>
       </fieldset>
 
+      <fieldset class="row">
+        <legend>表示方法</legend>
+        <label><input type="radio" name="display" value="replace" /> 置き換え（原文を訳文に置き換える。マウスを乗せると原文）</label>
+        <label><input type="radio" name="display" value="bilingual" /> 対訳（原文はそのままで、段落の下に訳文を差し込む）</label>
+      </fieldset>
+
       <div class="row">
         <label for="glossary">用語集</label>
         <textarea id="glossary" rows="8" placeholder="agent harness = エージェント基盤"></textarea>

@@ -1,7 +1,8 @@
-// Work Item 2: drive translation mode on a real page through the toolbar action and check the DOM.
-// Usage: node scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl] [--server=<url>]
+// Work Items 2 and 4: drive translation mode on a real page through the toolbar action and check the DOM.
+// Usage: node scripts/verify-translate.ts <translate|bilingual|unreachable> <evidenceDir> [pageUrl] [--server=<url>]
 //   --server: llama-server URL saved on the options page first; without it the default http://127.0.0.1:8080 is used.
-//   translate:   llama-server must be listening on that URL.
+//   translate:   replace display (the default); llama-server must be listening on that URL.
+//   bilingual:   the options page selects the bilingual display first; llama-server must be listening on that URL.
 //   unreachable: nothing may be listening on that URL; expects the connection error display.
 // Run `pnpm run build` first so dist/ is up to date.
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -25,9 +26,12 @@ const serverUrl = args
 const [mode, evidenceDir, pageUrl = REFERENCE_PAGE] = args.filter(
   (a) => !a.startsWith("--server="),
 );
-if ((mode !== "translate" && mode !== "unreachable") || !evidenceDir) {
+if (
+  (mode !== "translate" && mode !== "bilingual" && mode !== "unreachable") ||
+  !evidenceDir
+) {
   console.error(
-    "usage: node scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl] [--server=<url>]",
+    "usage: node scripts/verify-translate.ts <translate|bilingual|unreachable> <evidenceDir> [pageUrl] [--server=<url>]",
   );
   process.exit(2);
 }
@@ -39,45 +43,71 @@ const extensionPath = resolve(
 mkdirSync(evidenceDir, { recursive: true });
 
 // Runs in the page: text/HTML of every candidate paragraph and code block, keyed by document order.
+// bare is the outerHTML without the extension's inserted elements (the original DOM under a bilingual translation).
 const SNAPSHOT = `(() => {
   const all = [...document.body.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, pre")];
-  return all.map((el) => ({ tag: el.localName, text: el.textContent, html: el.outerHTML }));
+  const bare = (el) => {
+    const copy = el.cloneNode(true);
+    for (const m of copy.querySelectorAll('[data-browser-translator="inserted"]')) m.remove();
+    return copy.outerHTML;
+  };
+  return all.map((el) => ({ tag: el.localName, text: el.textContent, html: el.outerHTML, bare: bare(el) }));
 })()`;
 
 // Runs in the page after translation: the acceptance observations of the reference page.
+// A paragraph counts as translated when it carries the replace mark or holds a bilingual translation (a
+// lang="ja" inserted element); out is the element that holds the translated text, source the original text.
 const OBSERVE = `(() => {
   const ja = /[\\u3040-\\u30ff\\u4e00-\\u9fff]/;
-  const translated = [...document.querySelectorAll('[data-browser-translator="translated"]')];
+  const replaced = [...document.querySelectorAll('[data-browser-translator="translated"]')];
+  const added = [...document.querySelectorAll('[data-browser-translator="inserted"][lang="ja"]')];
+  const bareText = (el) => {
+    const copy = el.cloneNode(true);
+    for (const m of copy.querySelectorAll('[data-browser-translator="inserted"]')) m.remove();
+    return copy.textContent.replace(/\\s+/g, " ").trim();
+  };
+  const entries = [
+    ...replaced.map((el) => ({ el, out: el, source: el.title })),
+    ...added.map((out) => ({ el: out.parentElement, out, source: bareText(out.parentElement) })),
+  ];
+  const entryOf = (el) => entries.find((e) => e.el === el);
   const failed = [...document.querySelectorAll('[data-browser-translator="inserted"]')]
-    .filter((m) => m.parentElement && m.parentElement.closest("p, li, h1, h2, h3, h4, h5, h6"))
+    .filter((m) => (m.title || "").startsWith("翻訳できませんでした"))
     .map((m) => ({ marker: m.title, inArticle: !!m.closest(".blog-content"), text: m.parentElement.textContent.slice(0, 120) }));
   const article = [...document.querySelectorAll(".blog-content p, .blog-content li, .blog-content h1, .blog-content h2, .blog-content h3")]
     .filter((el) => !el.closest("pre") && /[A-Za-z]/.test(el.textContent))
     // A list item holding a non-empty nested list is left to its inner items (content.ts shortcut).
     .filter((el) => ![...el.querySelectorAll("p, li, ul, ol, pre, div")].some((b) => /\\S/.test(b.textContent)));
-  const byTitle = (start) => translated.find((el) => (el.title || "").startsWith(start));
-  const inline = (el) => el && {
-    html: el.innerHTML,
-    title: el.title,
-    codes: [...el.querySelectorAll("code")].map((c) => c.textContent),
-    strongs: [...el.querySelectorAll("strong")].map((s) => s.textContent),
-    links: [...el.querySelectorAll("a")].map((a) => ({ href: a.getAttribute("href"), rel: a.getAttribute("rel"), text: a.textContent })),
+  const bySource = (start) => entries.find((e) => e.source.startsWith(start));
+  const inline = (e) => e && {
+    html: e.out.innerHTML,
+    title: e.el.title,
+    source: e.source,
+    // Bilingual: the translation is the paragraph's last child, a block below the original text.
+    below: e.out !== e.el && e.el.lastElementChild === e.out && getComputedStyle(e.out).display === "block" &&
+      e.out.getBoundingClientRect().top > e.el.getBoundingClientRect().top,
+    codes: [...e.out.querySelectorAll("code")].map((c) => c.textContent),
+    strongs: [...e.out.querySelectorAll("strong")].map((s) => s.textContent),
+    links: [...e.out.querySelectorAll("a")].map((a) => ({ href: a.getAttribute("href"), rel: a.getAttribute("rel"), text: a.textContent })),
   };
   return {
-    translatedCount: translated.length,
-    translatedJapanese: translated.filter((el) => ja.test(el.textContent)).length,
-    translatedNotJapanese: translated.filter((el) => !ja.test(el.textContent)).map((el) => ({ source: el.title, text: el.textContent })),
+    replacedCount: replaced.length,
+    bilingualCount: added.length,
+    translatedCount: entries.length,
+    translatedJapanese: entries.filter((e) => ja.test(e.out.textContent)).length,
+    translatedNotJapanese: entries.filter((e) => !ja.test(e.out.textContent)).map((e) => ({ source: e.source, text: e.out.textContent })),
     articleCandidates: article.length,
-    articleTranslated: article.filter((el) => el.getAttribute("data-browser-translator") === "translated").length,
-    articleNotJapanese: article.filter((el) => el.getAttribute("data-browser-translator") === "translated" && !ja.test(el.textContent)).map((el) => el.textContent.slice(0, 120)),
-    articleUntranslated: article.filter((el) => el.getAttribute("data-browser-translator") !== "translated").map((el) => el.outerHTML.slice(0, 600)),
+    articleTranslated: article.filter((el) => entryOf(el)).length,
+    articleNotJapanese: article.filter((el) => entryOf(el) && !ja.test(entryOf(el).out.textContent)).map((el) => el.textContent.slice(0, 120)),
+    articleUntranslated: article.filter((el) => !entryOf(el)).map((el) => el.outerHTML.slice(0, 600)),
+    notBelow: added.filter((out) => !(out.parentElement.lastElementChild === out && getComputedStyle(out).display === "block")).length,
     failed,
     preJapanese: [...document.querySelectorAll("pre")].filter((el) => ja.test(el.textContent)).length,
     preTranslatedMark: document.querySelectorAll("pre [data-browser-translator], pre[data-browser-translator]").length,
-    knowledgeEngine: inline(byTitle("The knowledge engine.")),
-    guardrails: inline(byTitle("Keep guardrails cheap.")),
-    cuga: inline(byTitle("CUGA (ConfigUrable")),
-    leftoverTags: translated.filter((el) => /<\\/?[a-z]\\d+>/.test(el.textContent)).map((el) => el.textContent.slice(0, 120)),
+    knowledgeEngine: inline(bySource("The knowledge engine.")),
+    guardrails: inline(bySource("Keep guardrails cheap.")),
+    cuga: inline(bySource("CUGA (ConfigUrable")),
+    leftoverTags: entries.filter((e) => /<\\/?[a-z]\\d+>/.test(e.out.textContent)).map((e) => e.out.textContent.slice(0, 120)),
     notice: [...document.querySelectorAll('body > [data-browser-translator="inserted"]')].map((n) => n.textContent),
   };
 })()`;
@@ -86,6 +116,7 @@ interface Snapshot {
   tag: string;
   text: string;
   html: string;
+  bare: string;
 }
 
 async function screenshot(
@@ -123,9 +154,21 @@ try {
     const options = await applyOptions(cdp, extensionId, sw, {
       url: serverUrl,
       screenshot: join(evidenceDir, `${mode}-options.png`),
+      display: mode === "bilingual" ? "bilingual" : undefined,
     });
     record.options = options;
-    checks.optionsSaved = options.stored.url === serverUrl;
+    checks.optionsSaved =
+      options.stored.url === serverUrl &&
+      options.stored.display ===
+        (mode === "bilingual" ? "bilingual" : "replace");
+  } else if (mode === "bilingual") {
+    const options = await applyOptions(cdp, extensionId, sw, {
+      url: "http://127.0.0.1:8080",
+      screenshot: join(evidenceDir, "bilingual-options.png"),
+      display: "bilingual",
+    });
+    record.options = options;
+    checks.optionsSaved = options.stored.display === "bilingual";
   }
 
   const { targetId }: { targetId: string } = await cdp.send(
@@ -206,7 +249,7 @@ try {
     record.translateSeconds = Math.round((Date.now() - t0) / 1000);
     const o = await evaluate(cdp, page, OBSERVE);
     record.observed = o;
-    await screenshot(cdp, page, "translate-1-top.png");
+    await screenshot(cdp, page, `${mode}-1-top.png`);
     for (const [key, start] of [
       ["cuga", "Where CUGA fits"],
       ["knowledge", "The knowledge engine."],
@@ -215,18 +258,12 @@ try {
       await evaluate(
         cdp,
         page,
-        `[...document.querySelectorAll("[data-browser-translator]")].find((el) => (el.title || "").startsWith(${JSON.stringify(start)}))?.scrollIntoView({ block: "center" })`,
+        `[...document.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6")].find((el) => (el.textContent || "").trim().startsWith(${JSON.stringify(start)}))?.scrollIntoView({ block: "center" })`,
       );
       await sleep(300);
-      await screenshot(cdp, page, `translate-2-${key}.png`);
+      await screenshot(cdp, page, `${mode}-2-${key}.png`);
     }
-    // Hover: the original text is the element's title, shown as a tooltip by the browser.
-    const hoverTitle: string = await evaluate(
-      cdp,
-      page,
-      `(() => { const el = [...document.querySelectorAll('[data-browser-translator="translated"]')].find((e) => (e.title || "").startsWith("Keep guardrails cheap.")); return el ? el.title : null; })()`,
-    );
-    record.hoverTitle = hoverTitle;
+    const during: Snapshot[] = await evaluate(cdp, page, SNAPSHOT);
 
     checks.badgeOn = record.badgeOn === "ON";
     checks.articleJapanese =
@@ -255,9 +292,33 @@ try {
         l.href === "https://cuga.dev" && l.text === "CUGA",
     );
     checks.noLeftoverTags = o.leftoverTags.length === 0;
-    checks.hoverShowsOriginal =
-      typeof hoverTitle === "string" &&
-      hoverTitle.startsWith("Keep guardrails cheap.");
+    if (mode === "translate") {
+      // Hover: the original text is the element's title, shown as a tooltip by the browser.
+      const hoverTitle: string = await evaluate(
+        cdp,
+        page,
+        `(() => { const el = [...document.querySelectorAll('[data-browser-translator="translated"]')].find((e) => (e.title || "").startsWith("Keep guardrails cheap.")); return el ? el.title : null; })()`,
+      );
+      record.hoverTitle = hoverTitle;
+      checks.hoverShowsOriginal =
+        typeof hoverTitle === "string" &&
+        hoverTitle.startsWith("Keep guardrails cheap.");
+    } else {
+      // Bilingual: every translation is a block at the end of its paragraph, and the page's own DOM is untouched.
+      const changed = before
+        .map((b, i) => ({ i, b, d: during[i] }))
+        .filter(({ b, d }) => !d || d.bare !== b.html);
+      record.bilingualOriginalDiffs = changed.slice(0, 5);
+      checks.bilingualBelow =
+        o.replacedCount === 0 &&
+        o.bilingualCount > 0 &&
+        o.notBelow === 0 &&
+        [o.knowledgeEngine, o.guardrails, o.cuga].every(
+          (e: { below: boolean } | undefined) => e?.below === true,
+        );
+      checks.bilingualOriginalKept =
+        before.length === during.length && changed.length === 0;
+    }
 
     await clickToolbarButton();
     await sleep(1000);
@@ -273,7 +334,7 @@ try {
       "document.querySelectorAll('[data-browser-translator]').length",
     );
     await evaluate(cdp, page, "window.scrollTo(0, 0)");
-    await screenshot(cdp, page, "translate-3-off.png");
+    await screenshot(cdp, page, `${mode}-3-off.png`);
     checks.offRestoresDom =
       before.length === after.length &&
       diffs.length === 0 &&

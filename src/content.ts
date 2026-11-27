@@ -23,15 +23,19 @@ const PARAGRAPHS = "p, li, h1, h2, h3, h4, h5, h6";
 // text directly inside such an li stays English. Upgrade if real pages need it.
 const NESTED_BLOCKS = `${PARAGRAPHS}, pre, ul, ol, div, table, blockquote`;
 
+// A paragraph seen during translation mode, kept in memory until the mode ends.
 interface Paragraph {
   el: HTMLElement;
+  // Text of the paragraph without the extension's inserted elements, as last seen.
   source: string;
-}
-
-interface Translated {
-  el: HTMLElement;
-  original: Node[];
-  title: string | null;
+  // Reported by the IntersectionObserver; visible paragraphs are translated first.
+  visible: boolean;
+  // Replace display, after the translation was written: its text, and the page's own children and title.
+  shown?: string;
+  original?: Node[];
+  title?: string | null;
+  // The bilingual translation or the failure marker inside the paragraph.
+  added?: Element;
 }
 
 // Survives between injections into the same document; set while translation mode is on.
@@ -44,23 +48,36 @@ function status(s: StatusMessage["state"]): void {
   chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
-const plain = (el: Element) =>
-  (el.textContent ?? "").replace(/\s+/g, " ").trim();
+const INSERTED = `[${MARK}="inserted"]`;
 
-function findParagraphs(): Paragraph[] {
-  return [...document.body.querySelectorAll<HTMLElement>(PARAGRAPHS)]
-    .filter(
-      (el) =>
-        !el.closest(`pre, code, [${MARK}]`) &&
-        ![...el.querySelectorAll(NESTED_BLOCKS)].some((b) =>
-          /\S/.test(b.textContent ?? ""),
-        ) &&
-        /[A-Za-z]/.test(el.textContent ?? ""),
-    )
-    .map((el) => ({ el, source: plain(el) }));
+const isInserted = (node: Node) =>
+  node instanceof Element && node.getAttribute(MARK) === "inserted";
+
+// Text of el without the elements the extension inserted, whitespace collapsed.
+function textOf(el: Element): string {
+  let text = "";
+  for (const child of el.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE) text += child.textContent ?? "";
+    else if (child instanceof Element && !isInserted(child))
+      text += textOf(child);
+  }
+  return text.replace(/\s+/g, " ").trim();
+}
+
+// A paragraph with English text and no non-empty block inside, outside code and outside the extension's marks
+// (a translated paragraph carries the mark itself, so only marked ancestors exclude).
+function isParagraph(el: HTMLElement): boolean {
+  return (
+    !el.parentElement?.closest(`pre, code, [${MARK}]`) &&
+    ![...el.querySelectorAll(NESTED_BLOCKS)].some(
+      (b) => !b.closest(INSERTED) && /\S/.test(b.textContent ?? ""),
+    ) &&
+    /[A-Za-z]/.test(textOf(el))
+  );
 }
 
 // DOM -> the structure src/text.ts works on. Elements without text (img, svg, br) are leaves and are cloned whole.
+// The extension's inserted elements are left out.
 function toInline(
   parent: Node,
   domOf: Map<InlineElement, Element>,
@@ -68,7 +85,7 @@ function toInline(
   const nodes: InlineNode[] = [];
   for (const child of parent.childNodes) {
     if (child.nodeType === Node.TEXT_NODE) nodes.push(child.textContent ?? "");
-    else if (child instanceof Element) {
+    else if (child instanceof Element && !isInserted(child)) {
       const hasText = (child.textContent ?? "").trim() !== "";
       const inline: InlineElement = {
         kind: child.localName,
@@ -96,24 +113,43 @@ function toDom(
   });
 }
 
-function start(serial: boolean): void {
+// Paragraphs (or their ancestors) that a batch of page mutations touched. Changes inside the extension's
+// inserted elements are not looked at.
+function touchedParagraphs(records: MutationRecord[]): Set<HTMLElement> {
+  const found = new Set<HTMLElement>();
+  const add = (el: Element | null) => {
+    if (el instanceof HTMLElement) found.add(el);
+  };
+  for (const r of records) {
+    const target =
+      r.target instanceof Element ? r.target : r.target.parentElement;
+    if (!target?.isConnected || target.closest(INSERTED)) continue;
+    add(target.closest(PARAGRAPHS));
+    for (const node of r.addedNodes) {
+      if (!(node instanceof Element) || isInserted(node)) continue;
+      for (const el of node.querySelectorAll(PARAGRAPHS)) add(el);
+      add(node.closest(PARAGRAPHS));
+    }
+  }
+  return found;
+}
+
+// A document kept in the back/forward cache comes back with translation mode's state, but Chrome clears the
+// badge: a normal navigation ends the mode.
+function onPageHide(e: PageTransitionEvent): void {
+  if (e.persisted) globalThis.browserTranslatorOff?.();
+}
+
+function start(serial: boolean, bilingual: boolean): void {
   let active = true;
   // Serial mode: the last paragraph that was translated, sent as translation history with the next one.
   let history: HistoryPair | undefined;
-  const translated: Translated[] = [];
   const inserted: Element[] = [];
-  const paragraphs = findParagraphs();
-  const pending = new Set(paragraphs);
-  const visible: Paragraph[] = [];
-  const byElement = new Map<Element, Paragraph>(
-    paragraphs.map((p) => [p.el, p]),
-  );
-
-  const title = document.title;
-  const description =
-    document
-      .querySelector<HTMLMetaElement>('meta[name="description"]')
-      ?.content.trim() ?? "";
+  // Every paragraph seen in this mode; paragraphs are the ones in the document, in document order.
+  const byElement = new Map<Element, Paragraph>();
+  let paragraphs: Paragraph[] = [];
+  const pending = new Set<Paragraph>();
+  let workers = 0;
 
   function insertMarked(el: HTMLElement, parent: Element): void {
     el.setAttribute(MARK, "inserted");
@@ -133,101 +169,214 @@ function start(serial: boolean): void {
     insertMarked(notice, document.body);
   }
 
-  function markFailed(el: HTMLElement, reason: string): void {
+  function markFailed(p: Paragraph, reason: string): void {
     const marker = document.createElement("span");
     marker.textContent = " ⚠";
     marker.title = `翻訳できませんでした（${reason}）`;
     marker.style.cssText = "color:#d93025;font-size:0.8em;cursor:help";
-    insertMarked(marker, el);
+    p.added?.remove();
+    insertMarked(marker, p.el);
+    p.added = marker;
+  }
+
+  function show(p: Paragraph, nodes: Node[]): void {
+    p.added?.remove();
+    p.added = undefined;
+    if (bilingual) {
+      const translation = document.createElement("span");
+      translation.lang = "ja";
+      translation.style.cssText = "display:block;margin-top:0.25em";
+      translation.append(...nodes);
+      insertMarked(translation, p.el);
+      p.added = translation;
+      return;
+    }
+    p.original = [...p.el.childNodes];
+    p.title = p.el.getAttribute("title");
+    p.el.replaceChildren(...nodes);
+    p.el.setAttribute(MARK, "translated");
+    p.el.title = p.source; // hovering shows the original text
+    p.shown = textOf(p.el);
   }
 
   async function translateParagraph(p: Paragraph): Promise<void> {
-    const i = paragraphs.indexOf(p);
+    const source = p.source;
+    const connected = paragraphs.filter((x) => x.el.isConnected);
+    const i = connected.indexOf(p);
+    // Read when sent: an SPA changes the title and description without reloading.
+    const description =
+      document
+        .querySelector<HTMLMetaElement>('meta[name="description"]')
+        ?.content.trim() ?? "";
     // Serial mode passes the previous translation as history instead of the neighbouring source paragraphs.
     const context = buildParallelContext({
-      title,
+      title: document.title,
       description,
-      previous: serial ? "" : (paragraphs[i - 1]?.source ?? ""),
-      next: serial ? "" : (paragraphs[i + 1]?.source ?? ""),
+      previous: serial ? "" : (connected[i - 1]?.source ?? ""),
+      next: serial ? "" : (connected[i + 1]?.source ?? ""),
     });
     const domOf = new Map<InlineElement, Element>();
     const { text, elements } = toTagged(toInline(p.el, domOf));
-    const source = text.replace(/\s+/g, " ").trim();
+    const tagged = text.replace(/\s+/g, " ").trim();
     let reason = "";
     for (const retry of [false, true]) {
       const req: TranslateRequest = {
         type: "translate",
-        source,
+        source: tagged,
         context,
         retry,
         history,
       };
       const res: TranslateResponse = await chrome.runtime.sendMessage(req);
       if (!active) return;
+      // The page changed the paragraph while it was being translated; the change queued it again.
+      if (p.source !== source || !p.el.isConnected) return;
       if (!res.ok) {
         if (res.unreachable) showConnectionError(res.message);
         else if (res.truncated) {
           reason = "長すぎて途中で切れました";
           continue; // treated like a tag mismatch: retry once, then keep the original
-        } else markFailed(p.el, res.message);
+        } else markFailed(p, res.message);
         return;
       }
       const restored = restoreTags(res.text, elements);
       if (restored.ok) {
-        const nodes = toDom(restored.nodes, domOf);
-        translated.push({
-          el: p.el,
-          original: [...p.el.childNodes],
-          title: p.el.getAttribute("title"),
-        });
-        p.el.replaceChildren(...nodes);
-        p.el.setAttribute(MARK, "translated");
-        p.el.title = p.source; // hovering shows the original text
-        if (serial) history = { source, translation: res.text };
+        show(p, toDom(restored.nodes, domOf));
+        if (serial) history = { source: tagged, translation: res.text };
         return;
       }
       reason = `タグが合いません: ${restored.problems.join(", ")}`;
     }
-    markFailed(p.el, reason);
+    markFailed(p, reason);
   }
 
   function next(): Paragraph | undefined {
     if (!active) return undefined;
-    // A paragraph can be queued in visible again after it was taken; skip the ones already taken.
-    let p = visible.shift();
-    while (p && !pending.has(p)) p = visible.shift();
+    let p: Paragraph | undefined;
+    for (const q of pending)
+      if (q.visible) {
+        p = q;
+        break;
+      }
     p ??= pending.values().next().value;
     if (p) pending.delete(p);
     return p;
   }
 
   async function worker(): Promise<void> {
-    for (let p = next(); p; p = next()) await translateParagraph(p);
+    try {
+      for (let p = next(); p; p = next())
+        if (p.el.isConnected) await translateParagraph(p);
+    } finally {
+      workers--; // in the same task as the last next(), so startWorkers never counts a worker that has stopped
+    }
   }
 
-  let started = false;
-  const observer = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      const p = byElement.get(entry.target);
-      if (entry.isIntersecting && p && pending.has(p)) visible.push(p);
-    }
-    if (started) return;
-    started = true; // the first callback reports every observed paragraph, so visible ones go first
-    for (let n = 0; n < (serial ? 1 : PARALLEL_REQUESTS); n++)
+  function startWorkers(): void {
+    if (!active) return;
+    const idle = Math.min(
+      (serial ? 1 : PARALLEL_REQUESTS) - workers,
+      pending.size,
+    );
+    for (let n = 0; n < idle; n++) {
+      workers++;
       worker().catch((e: unknown) =>
         showConnectionError(e instanceof Error ? e.message : String(e)),
       );
+    }
+  }
+
+  const intersection = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const p = byElement.get(entry.target);
+      if (p) p.visible = entry.isIntersecting;
+    }
+    // Every observe() reports once first, so the visible paragraphs are known before the workers start.
+    startWorkers();
   });
-  for (const p of paragraphs) observer.observe(p.el);
+
+  function addParagraphs(els: HTMLElement[]): void {
+    for (const el of els) {
+      const p: Paragraph = { el, source: textOf(el), visible: false };
+      byElement.set(el, p);
+      pending.add(p);
+      intersection.observe(el);
+    }
+    paragraphs = [...byElement.values()]
+      .filter((p) => p.el.isConnected)
+      .toSorted((a, b) =>
+        a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING
+          ? -1
+          : 1,
+      );
+  }
+
+  // The page changed a paragraph that was seen before; false when the change is the extension's own writing.
+  function changedByPage(p: Paragraph): boolean {
+    if (p.shown !== undefined) {
+      if (textOf(p.el) === p.shown) return false;
+      // The page replaced the translation: its new children are the original from now on.
+      p.shown = undefined;
+      p.original = undefined;
+      p.el.removeAttribute(MARK);
+      if (p.title === null) p.el.removeAttribute("title");
+      else if (p.title !== undefined) p.el.title = p.title;
+    } else if (
+      textOf(p.el) === p.source &&
+      // The page redrew the paragraph with the same text and dropped the translation or failure marker.
+      (p.added === undefined || p.added.isConnected)
+    )
+      return false;
+    p.source = textOf(p.el);
+    // The translation or failure marker belongs to the old text.
+    p.added?.remove();
+    p.added = undefined;
+    return true;
+  }
+
+  // Paragraphs added or changed by the page (an SPA keeps the same document, so its new pages arrive here too).
+  const mutations = new MutationObserver((records) => {
+    if (!active) return;
+    const added: HTMLElement[] = [];
+    for (const el of touchedParagraphs(records)) {
+      const p = byElement.get(el);
+      if (p) {
+        if (changedByPage(p) && isParagraph(el)) pending.add(p);
+      } else if (!el.hasAttribute(MARK) && isParagraph(el)) added.push(el);
+    }
+    // Not left to the IntersectionObserver: it reports only when the page renders (not in a hidden tab).
+    if (added.length > 0) addParagraphs(added);
+    startWorkers();
+  });
+
+  addParagraphs(
+    [...document.body.querySelectorAll<HTMLElement>(PARAGRAPHS)].filter(
+      isParagraph,
+    ),
+  );
+  mutations.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+
+  addEventListener("pagehide", onPageHide);
 
   globalThis.browserTranslatorOff = () => {
     active = false;
-    observer.disconnect();
-    for (const t of translated) {
-      t.el.replaceChildren(...t.original);
-      t.el.removeAttribute(MARK);
-      if (t.title === null) t.el.removeAttribute("title");
-      else t.el.title = t.title;
+    removeEventListener("pagehide", onPageHide);
+    mutations.disconnect();
+    intersection.disconnect();
+    for (const p of byElement.values()) {
+      p.added?.remove();
+      // A translation the page has already replaced is left as the page made it.
+      if (p.shown === undefined || textOf(p.el) !== p.shown) continue;
+      p.el.replaceChildren(...(p.original ?? []));
+      p.el.removeAttribute(MARK);
+      if (p.title === null || p.title === undefined)
+        p.el.removeAttribute("title");
+      else p.el.title = p.title;
+      p.shown = undefined;
     }
     for (const el of inserted) el.remove();
     globalThis.browserTranslatorOff = undefined;
@@ -245,6 +394,7 @@ else {
     globalThis.browserTranslatorOff = undefined;
   };
   loadSettings().then((settings) => {
-    if (!cancelled) start(settings.mode === "serial");
+    if (!cancelled)
+      start(settings.mode === "serial", settings.display === "bilingual");
   }, console.error);
 }

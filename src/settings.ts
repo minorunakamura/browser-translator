@@ -7,6 +7,8 @@ export interface Settings {
   // "" means the first model of /v1/models.
   model: string;
   mode: "parallel" | "serial";
+  // replace: the translation takes the paragraph's place. bilingual: it is added below the original.
+  display: "replace" | "bilingual";
   glossary: GlossaryEntry[];
 }
 
@@ -14,6 +16,7 @@ const DEFAULT_SETTINGS: Settings = {
   url: "http://127.0.0.1:8080",
   model: "",
   mode: "parallel",
+  display: "replace",
   glossary: [],
 };
 
