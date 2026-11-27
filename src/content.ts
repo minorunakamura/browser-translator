@@ -5,7 +5,9 @@ import type {
   TranslateRequest,
   TranslateResponse,
 } from "./background.ts";
+import { loadSettings } from "./settings.ts";
 import {
+  type HistoryPair,
   type InlineElement,
   type InlineNode,
   type RestoredNode,
@@ -15,7 +17,7 @@ import {
 } from "./text.ts";
 
 const MARK = "data-browser-translator";
-const MAX_CONCURRENT_REQUESTS = 4;
+const PARALLEL_REQUESTS = 4;
 const PARAGRAPHS = "p, li, h1, h2, h3, h4, h5, h6";
 // shortcut: a paragraph that contains another block is skipped (its inner blocks are translated);
 // text directly inside such an li stays English. Upgrade if real pages need it.
@@ -94,8 +96,10 @@ function toDom(
   });
 }
 
-function start(): void {
+function start(serial: boolean): void {
   let active = true;
+  // Serial mode: the last paragraph that was translated, sent as translation history with the next one.
+  let history: HistoryPair | undefined;
   const translated: Translated[] = [];
   const inserted: Element[] = [];
   const paragraphs = findParagraphs();
@@ -139,11 +143,12 @@ function start(): void {
 
   async function translateParagraph(p: Paragraph): Promise<void> {
     const i = paragraphs.indexOf(p);
+    // Serial mode passes the previous translation as history instead of the neighbouring source paragraphs.
     const context = buildParallelContext({
       title,
       description,
-      previous: paragraphs[i - 1]?.source ?? "",
-      next: paragraphs[i + 1]?.source ?? "",
+      previous: serial ? "" : (paragraphs[i - 1]?.source ?? ""),
+      next: serial ? "" : (paragraphs[i + 1]?.source ?? ""),
     });
     const domOf = new Map<InlineElement, Element>();
     const { text, elements } = toTagged(toInline(p.el, domOf));
@@ -155,6 +160,7 @@ function start(): void {
         source,
         context,
         retry,
+        history,
       };
       const res: TranslateResponse = await chrome.runtime.sendMessage(req);
       if (!active) return;
@@ -177,6 +183,7 @@ function start(): void {
         p.el.replaceChildren(...nodes);
         p.el.setAttribute(MARK, "translated");
         p.el.title = p.source; // hovering shows the original text
+        if (serial) history = { source, translation: res.text };
         return;
       }
       reason = `タグが合いません: ${restored.problems.join(", ")}`;
@@ -206,7 +213,7 @@ function start(): void {
     }
     if (started) return;
     started = true; // the first callback reports every observed paragraph, so visible ones go first
-    for (let n = 0; n < MAX_CONCURRENT_REQUESTS; n++)
+    for (let n = 0; n < (serial ? 1 : PARALLEL_REQUESTS); n++)
       worker().catch((e: unknown) =>
         showConnectionError(e instanceof Error ? e.message : String(e)),
       );
@@ -230,4 +237,14 @@ function start(): void {
 }
 
 if (globalThis.browserTranslatorOff) globalThis.browserTranslatorOff();
-else start();
+else {
+  // A second injection while settings load cancels the pending start; no "off" status since the badge is not on yet.
+  let cancelled = false;
+  globalThis.browserTranslatorOff = () => {
+    cancelled = true;
+    globalThis.browserTranslatorOff = undefined;
+  };
+  loadSettings().then((settings) => {
+    if (!cancelled) start(settings.mode === "serial");
+  }, console.error);
+}

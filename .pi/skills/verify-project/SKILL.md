@@ -1,6 +1,6 @@
 ---
 name: verify-project
-description: browser-translator（Chrome MV3 拡張 + ローカル llama-server）の実動作確認。dist/ を一時プロファイルの Chrome に読み込み、所有するポートの llama-server（router モード）で基準ページを翻訳し、DOM の照合とスクリーンショットを残して後始末する。拡張の翻訳・表示・接続エラーを変更したときに使う。
+description: browser-translator（Chrome MV3 拡張 + ローカル llama-server）の実動作確認。dist/ を一時プロファイルの Chrome に読み込み、所有するポートの llama-server（router モード）で基準ページを翻訳し、設定画面の操作・service worker の送信内容・DOM の照合とスクリーンショットを残して後始末する。拡張の翻訳・表示・接続エラー・設定（URL・モデル・送り方・用語集）を変更したときに使う。
 ---
 
 # verify-project（browser-translator）
@@ -18,11 +18,11 @@ description: browser-translator（Chrome MV3 拡張 + ローカル llama-server�
 
 ## ポートの決め方（重要）
 
-設定画面がまだ無いため、拡張は `http://127.0.0.1:8080` だけに接続する。
+拡張の既定の送信先は `http://127.0.0.1:8080`。helper は設定画面で URL を変えられるので、検証用の llama-server は 8080 以外の自分のポート（例 `18080`）で起動する。
 
-1. `lsof -iTCP:8080 -sTCP:LISTEN` で 8080 が空いていることを確かめる。
-2. 空いていれば、検証用の llama-server を 8080 で自分で起動する（下記）。
-3. 使われていれば（利用者が常駐させた llama-server など）、**止めたり使ったりしない**。翻訳の検証は行わず、未確認として報告する。8080 の常駐サーバーを使ってよいかは利用者に確認する。
+1. `lsof -iTCP:8080 -sTCP:LISTEN` と `lsof -iTCP:18080 -sTCP:LISTEN` を確かめる。8080 にいるプロセス（利用者の常駐 llama-server など）は**止めたり使ったりしない**。
+2. 18080 が空いていれば、そこで自分の llama-server を起動する（下記）。使われていれば別の空いたポートを選ぶ（`host_permissions` の都合で `127.0.0.1` か `localhost` に限る）。
+3. helper には `--server=http://127.0.0.1:18080`（`verify-translate.ts`）か第 2 引数（`verify-settings.ts`）で渡す。helper が設定画面で URL を保存してから翻訳する。
 
 ## 手順
 
@@ -32,25 +32,32 @@ description: browser-translator（Chrome MV3 拡張 + ローカル llama-server�
 2. ビルドする: `pnpm run build`（検証の前に必ず。読み込むのは `dist/`）。
 3. llama-server を router モードで起動し、PID を控える:
    ```sh
-   llama-server --models-dir <GGUF のディレクトリ> --host 127.0.0.1 --port 8080 --parallel 4 > $EVID/llama-server.log 2>&1 &
+   llama-server --models-dir <GGUF のディレクトリ> --host 127.0.0.1 --port 18080 --parallel 4 > $EVID/llama-server.log 2>&1 &
    echo $! > $EVID/llama-server.pid
    ```
-   使用可能になるまで待ち、`curl -s http://127.0.0.1:8080/v1/models` に目的のモデル（先頭が 0.8B）が並ぶことを確かめる。拡張は `/v1/models` の先頭のモデルを使う。
-4. 翻訳の照合（Feature Map「置き換え翻訳」）:
-   `node scripts/verify-translate.ts translate $EVID`
+   使用可能になるまで待ち、`curl -s http://127.0.0.1:18080/v1/models > $EVID/models.json` に目的のモデル（先頭が 0.8B。設定の確認には 2 つ以上）が並ぶことを確かめる。拡張は設定でモデルが未選択なら `/v1/models` の先頭を使う。
+4. 設定の照合（Feature Map「設定画面」「URL」「モデル」「直列」「用語集」。設定に関わる変更のとき）:
+   `node scripts/verify-settings.ts $EVID http://127.0.0.1:18080`
+   exit 0 で、`$EVID/settings.json` の `checks` がすべて true。`settings-options-*.png` に設定画面、`settings-*-*.png` に訳したページが写っている。並列・直列・並列の 3 回訳すため、0.8B〜2B で 2 分ほどかかる。
+5. 翻訳の照合（Feature Map「置き換え翻訳」）:
+   `node scripts/verify-translate.ts translate $EVID --server=http://127.0.0.1:18080`
    exit 0 で、`$EVID/translate.json` の `checks` がすべて true。スクリーンショット（`translate-*.png`）を開いて、日本語の本文・`code`・リンクの見た目を目で確かめる。
-5. 接続エラーの表示（Feature Map「接続エラー」）: 自分の llama-server を PID で止め（`kill $(cat $EVID/llama-server.pid)`）、`lsof -iTCP:8080 -sTCP:LISTEN` が空になったのを確かめてから:
-   `node scripts/verify-translate.ts unreachable $EVID`
-   exit 0 で、`unreachable.json` の `checks` がすべて true。`unreachable-1-on.png` に赤い通知が写っている。
-6. 実行記録 `$EVID/run.md` を書く: 対象機能と入口、source の版と未コミット変更、前提（Chrome・llama-server の版、モデル）、操作、期待結果と観測結果、成否、未確認の範囲。
-7. 後始末: 自分が起動した llama-server だけを PID で止める（プロセス名で一括終了しない）。Chrome と一時プロファイルは helper が終了時に閉じて消す（`ls -d ${TMPDIR:-/tmp}/bt-chrome-*` で残りが無いか確かめる）。証拠は消さない。後始末の後に `$EVID` の JSON と PNG が読めることを確かめる。
+6. 接続エラーの表示（Feature Map「接続エラー」）: 自分の llama-server を PID で止め（`kill $(cat $EVID/llama-server.pid)`）、`lsof -iTCP:18080 -sTCP:LISTEN` が空になったのを確かめてから:
+   `node scripts/verify-translate.ts unreachable $EVID --server=http://127.0.0.1:18080`
+   exit 0 で、`unreachable.json` の `checks` がすべて true。`unreachable-1-on.png` に赤い通知（URL を含む）が写っている。
+7. 実行記録 `$EVID/run.md` を書く: 対象機能と入口、source の版と未コミット変更、前提（Chrome・llama-server の版、モデル）、操作、期待結果と観測結果、成否、未確認の範囲。
+8. 後始末: 自分が起動した llama-server だけを PID で止める（プロセス名で一括終了しない）。Chrome と一時プロファイルは helper が終了時に閉じて消す（`ls -d ${TMPDIR:-/tmp}/bt-chrome-*` で残りが無いか確かめる）。証拠は消さない。後始末の後に `$EVID` の JSON と PNG が読めることを確かめる。
+
+手順 5・6 の `--server` を省くと、helper は設定を変えずに既定の `http://127.0.0.1:8080` へ送る（8080 が空いていて自分で起動した場合だけ使う）。
 
 失敗したら、llama-server が使用可能か（`/v1/models`）と `dist/` が最新かを確かめ直してから再実行する。helper の不具合は helper を直して再実行する。製品の不具合を期待値の緩和で隠さない。
 
 ## helper
 
 - `scripts/cdp.ts`: Chrome の起動（一時プロファイル）、拡張の読み込み、service worker への attach、`Runtime.evaluate`。
-- `scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl]`: 新しいタブで基準ページを開き、CDP の `Extensions.triggerAction`（ツールバーのボタンを押したときと同じく `chrome.action.onClicked` が発火する）で翻訳モードを切り替え、DOM を照合して JSON とスクリーンショットを保存する。
+- `scripts/extension.ts`: 設定画面（`chrome-extension://<id>/options.html`）を新しいタブで開き、利用者と同じくフォームを埋めて「保存」を押す `applyOptions`（保存後のスクリーンショットと `chrome.storage.local` の中身を返す）。service worker のセッションで `Network.enable` し、送信の URL・時刻・本文・応答の訳文を記録する `recordWorkerRequests`、同時送信数の `maxInFlight`、PFML3 を要素に分ける `pfml3Elements`。
+- `scripts/verify-settings.ts <evidenceDir> <serverUrl> [pageUrl]`: 1 つの Chrome で、設定画面から (1) URL（末尾 `/` 付きで入力）・2 番目のモデル・並列・用語集 `pi = パイ` / `harness = 実行基盤` を保存して訳す、(2) 直列・先頭のモデルにして訳す、(3) 並列に戻して訳す。送信内容とページを照合して `settings.json` とスクリーンショットを保存する。
+- `scripts/verify-translate.ts <translate|unreachable> <evidenceDir> [pageUrl] [--server=<url>]`: `--server` があれば先に設定画面でその URL を保存する。新しいタブで基準ページを開き、CDP の `Extensions.triggerAction`（ツールバーのボタンを押したときと同じく `chrome.action.onClicked` が発火する）で翻訳モードを切り替え、DOM を照合して JSON とスクリーンショットを保存する。
 - `scripts/verify-connection.ts`: Work Item 1 の接続確認（service worker から `/v1/models` と `/v1/completions`）。
 
 `Extensions.triggerAction` は CDP からの発火で、画面上のボタンを物理的に押すわけではない。実際のボタンのクリックは、ヘッドありの Chrome で人が少なくとも 1 回確かめる（Feature Map の注意を参照）。

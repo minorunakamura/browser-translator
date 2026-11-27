@@ -1,7 +1,11 @@
 // Service worker: toggles translation mode per tab and talks to the local llama-server only.
-import { PLAMO_STOP, buildPfml3Prompt } from "./text.ts";
-
-const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
+import { loadSettings } from "./settings.ts";
+import {
+  type HistoryPair,
+  PLAMO_STOP,
+  buildPfml3Prompt,
+  matchGlossary,
+} from "./text.ts";
 
 interface ModelsResponse {
   data: { id: string }[];
@@ -16,7 +20,14 @@ export type TranslateRequest = {
   source: string;
   context: string;
   retry: boolean;
+  // Serial mode: the previous translated paragraph.
+  history?: HistoryPair;
 };
+// The options page lists the models of a URL through the service worker, which owns every fetch.
+export type ModelsRequest = { type: "models"; url: string };
+export type ModelsListResponse =
+  | { ok: true; models: string[] }
+  | { ok: false; message: string };
 export type StatusMessage = { type: "status"; state: "on" | "off" | "error" };
 export type TranslateResponse =
   | { ok: true; text: string }
@@ -26,9 +37,7 @@ export type TranslateResponse =
 class TruncatedError extends Error {}
 
 // Returns the model ids reported by llama-server's /v1/models.
-async function listModels(
-  baseUrl: string = DEFAULT_BASE_URL,
-): Promise<string[]> {
+async function listModels(baseUrl: string): Promise<string[]> {
   const res = await fetch(`${baseUrl}/v1/models`);
   if (!res.ok) throw new Error(`/v1/models failed: HTTP ${res.status}`);
   const body: ModelsResponse = await res.json();
@@ -60,23 +69,33 @@ async function complete(
   return body.choices[0].text.trim();
 }
 
-// No settings screen yet: the first model of /v1/models is used, looked up once per service worker lifetime.
-let firstModel: Promise<string> | undefined;
+// When no model is chosen, the first model of /v1/models is used, looked up once per URL per service worker lifetime.
+const firstModels = new Map<string, Promise<string>>();
 
-async function translate(req: TranslateRequest): Promise<TranslateResponse> {
-  try {
-    firstModel ??= listModels().then((ids) => {
+function firstModel(baseUrl: string): Promise<string> {
+  let model = firstModels.get(baseUrl);
+  if (!model) {
+    model = listModels(baseUrl).then((ids) => {
       if (ids.length === 0) throw new Error("/v1/models returned no models");
       return ids[0];
     });
-    const model = await firstModel.catch((e: unknown) => {
-      firstModel = undefined;
-      throw e;
+    model.catch(() => firstModels.delete(baseUrl));
+    firstModels.set(baseUrl, model);
+  }
+  return model;
+}
+
+async function translate(req: TranslateRequest): Promise<TranslateResponse> {
+  const settings = await loadSettings();
+  try {
+    const model = settings.model || (await firstModel(settings.url));
+    const prompt = buildPfml3Prompt(req.source, req.context, {
+      history: req.history ? [req.history] : [],
+      glossary: matchGlossary(req.source, settings.glossary),
     });
-    const prompt = buildPfml3Prompt(req.source, req.context);
     // A retry at temperature 0 would return the same text, so the retry samples a little.
     const text = await complete(
-      DEFAULT_BASE_URL,
+      settings.url,
       model,
       prompt,
       req.retry ? 0.3 : 0,
@@ -88,7 +107,18 @@ async function translate(req: TranslateRequest): Promise<TranslateResponse> {
       ok: false,
       unreachable: e instanceof TypeError,
       truncated: e instanceof TruncatedError,
-      message: `${DEFAULT_BASE_URL}: ${e instanceof Error ? e.message : String(e)}`,
+      message: `${settings.url}: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+async function models(req: ModelsRequest): Promise<ModelsListResponse> {
+  try {
+    return { ok: true, models: await listModels(req.url) };
+  } catch (e) {
+    return {
+      ok: false,
+      message: `${req.url}: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
 }
@@ -128,11 +158,19 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 });
 
 chrome.runtime.onMessage.addListener(
-  (msg: TranslateRequest | StatusMessage, sender, sendResponse) => {
+  (
+    msg: TranslateRequest | ModelsRequest | StatusMessage,
+    sender,
+    sendResponse,
+  ) => {
     if (msg.type === "status") {
       if (sender.tab?.id !== undefined)
         setBadge(sender.tab.id, msg.state).catch(console.error);
       return false;
+    }
+    if (msg.type === "models") {
+      models(msg).then(sendResponse, console.error);
+      return true;
     }
     translate(msg).then(sendResponse, console.error);
     return true; // keeps sendResponse alive for the async reply

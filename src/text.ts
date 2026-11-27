@@ -126,11 +126,58 @@ export function buildParallelContext(c: ParallelContext): string {
     .join("\n");
 }
 
-// en -> ja polite PFML3 prompt; context goes right after dataset (PLaMo 3 Translate model card).
-export function buildPfml3Prompt(source: string, context: string): string {
+export interface GlossaryEntry {
+  source: string;
+  target: string;
+}
+
+// A previously translated paragraph: the tagged source that was sent and the tagged translation that came back.
+export interface HistoryPair {
+  source: string;
+  translation: string;
+}
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Glossary entries whose source term appears in the paragraph as a whole word, ignoring case.
+// Inline tags such as <a1> are removed first so they neither match nor split words. Word forms are not handled.
+export function matchGlossary(
+  source: string,
+  glossary: GlossaryEntry[],
+): GlossaryEntry[] {
+  const text = source.replace(/<\/?[a-z]\d+>/g, "");
+  return glossary.filter((entry) =>
+    new RegExp(
+      `(?<![\\p{L}\\p{N}_])${escapeRegExp(entry.source)}(?![\\p{L}\\p{N}_])`,
+      "iu",
+    ).test(text),
+  );
+}
+
+// en -> ja polite PFML3 prompt (PLaMo 3 Translate model card): dataset, context, history input/output pairs,
+// glossary, then the current input. form applies only to the current output.
+export function buildPfml3Prompt(
+  source: string,
+  context: string,
+  {
+    history = [],
+    glossary = [],
+  }: { history?: HistoryPair[]; glossary?: GlossaryEntry[] } = {},
+): string {
   const ctx = context ? `${T}context<|plamo:msg|>${context}` : "";
+  const pairs = history
+    .map(
+      (h) =>
+        `${T}input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>${h.source}` +
+        `${T}output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>${h.translation}`,
+    )
+    .join("");
+  const terms =
+    glossary.length > 0
+      ? `${T}glossary${glossary.map((g) => `<|plamo:index|>${g.source}<|plamo:item|>${g.target}`).join("")}`
+      : "";
   return (
-    `${T}dataset<|plamo:msg|>translation${ctx}` +
+    `${T}dataset<|plamo:msg|>translation${ctx}${pairs}${terms}` +
     `${T}input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>${source}` +
     `${T}output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>polite<|plamo:msg|>`
   );
