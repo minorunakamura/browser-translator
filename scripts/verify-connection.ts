@@ -107,7 +107,7 @@ try {
   const prompt: string = await evaluate(
     chrome.cdp,
     sessionId,
-    `buildMinimalPfml3Prompt(${JSON.stringify(SOURCE)})`,
+    `buildPfml3Prompt(${JSON.stringify(SOURCE)}, "")`,
   );
   const t0 = Date.now();
   const output: string = await evaluate(

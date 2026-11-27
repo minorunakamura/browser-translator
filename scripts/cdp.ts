@@ -34,7 +34,8 @@ export interface LaunchedChrome {
   close: () => Promise<void>;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+export const sleep = (ms: number) =>
+  new Promise<void>((r) => setTimeout(r, ms));
 
 export function launchChrome({
   chromePath = CHROME_PATH,
