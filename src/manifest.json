@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Browser Translator",
+  "version": "0.1.0",
+  "description": "Translate web pages with a local llama-server (PLaMo 3 Translate).",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Browser Translator"
+  }
+}
