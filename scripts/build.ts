@@ -10,7 +10,7 @@ const srcDir = join(root, "src");
 const distDir = join(root, "dist");
 
 // Each entry is built separately so every output is a classic script with no import statements.
-const ENTRIES = ["background"];
+const ENTRIES = ["background", "content"];
 const STATIC_FILES = ["manifest.json"];
 
 rmSync(distDir, { recursive: true, force: true });
