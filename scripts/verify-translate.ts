@@ -71,6 +71,11 @@ const OBSERVE = `(() => {
     ...added.map((out) => ({ el: out.parentElement, out, source: bareText(out.parentElement) })),
   ];
   const entryOf = (el) => entries.find((e) => e.el === el);
+  const outsideCode = (el) => {
+    const copy = el.cloneNode(true);
+    for (const c of copy.querySelectorAll("code")) c.remove();
+    return copy.textContent;
+  };
   const failed = [...document.querySelectorAll('[data-browser-translator="inserted"]')]
     .filter((m) => (m.title || "").startsWith("翻訳できませんでした"))
     .map((m) => ({ marker: m.title, inArticle: !!m.closest(".blog-content"), text: m.parentElement.textContent.slice(0, 120) }));
@@ -107,7 +112,8 @@ const OBSERVE = `(() => {
     knowledgeEngine: inline(bySource("The knowledge engine.")),
     guardrails: inline(bySource("Keep guardrails cheap.")),
     cuga: inline(bySource("CUGA (ConfigUrable")),
-    leftoverTags: entries.filter((e) => /<\\/?[a-z]\\d+>/.test(e.out.textContent)).map((e) => e.out.textContent.slice(0, 120)),
+    // A sent tag (<a>, <code id="2">, </strong>) left as text outside code; inside code "<h1>" is the source text.
+    leftoverTags: entries.filter((e) => /<\\/?[a-z][a-z0-9-]*( id="\\d+")?>/.test(outsideCode(e.out))).map((e) => e.out.textContent.slice(0, 120)),
     notice: [...document.querySelectorAll('body > [data-browser-translator="inserted"]')].map((n) => n.textContent),
   };
 })()`;
