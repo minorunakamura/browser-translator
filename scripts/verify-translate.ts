@@ -150,6 +150,9 @@ const bubbleObservation = (start: string, block: string) => `(() => {
       text: text?.textContent,
       fontSize: text && getComputedStyle(text).fontSize,
       userSelect: text && getComputedStyle(text).userSelect,
+      backgroundColor: text && getComputedStyle(text).backgroundColor,
+      borderColor: text && getComputedStyle(text).borderTopColor,
+      color: text && getComputedStyle(text).color,
       top: b.top, bottom: b.bottom, left: b.left, width: b.width, height: b.height,
       x: b.left + b.width / 2, y: b.top + b.height / 2,
     },
@@ -176,6 +179,9 @@ interface BubbleObservation {
     text: string;
     fontSize: string;
     userSelect: string;
+    backgroundColor: string;
+    borderColor: string;
+    color: string;
     top: number;
     bottom: number;
     left: number;
@@ -441,7 +447,13 @@ try {
       const left = await observeBubble();
       const end = await hover("end", "translate-5-bubble-above.png");
       await away();
+      const colors = centerShown?.bubble && {
+        backgroundColor: centerShown.bubble.backgroundColor,
+        borderColor: centerShown.bubble.borderColor,
+        color: centerShown.bubble.color,
+      };
       record.bubble = {
+        colors,
         center: { ...center, side: centerShown && side(centerShown) },
         onBubble: onBubble && { bubbles: onBubble.bubbles },
         afterLeaving: left && { bubbles: left.bubbles },
@@ -460,6 +472,11 @@ try {
         matches(end.shown) &&
         side(end.shown) === expectedSide(end.shown) &&
         side(end.shown) === "above";
+      // The fixed pale yellow of src/bubble.ts: #fff6cc, border #b8921a, text #1f1f1f.
+      checks.bubbleColors =
+        colors?.backgroundColor === "rgb(255, 246, 204)" &&
+        colors.borderColor === "rgb(184, 146, 26)" &&
+        colors.color === "rgb(31, 31, 31)";
       checks.bubbleStaysOnHover = onBubble?.bubbles === 1;
       checks.bubbleHidesOnLeave = left?.bubbles === 0;
     } else {
