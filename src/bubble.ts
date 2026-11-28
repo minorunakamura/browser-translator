@@ -58,9 +58,10 @@ export function startBubble(
     host.style.cssText = `all:initial;display:block;position:absolute;z-index:2147483647;box-sizing:border-box;width:${rect.width}px;left:${rect.left + scrollX}px;top:0`;
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
+    // A fixed pale yellow (sticky-note like) on every page, so the bubble stands out from a white page too.
     style.textContent =
-      "div{display:block;box-sizing:border-box;padding:8px 12px;background:#fff;color:#1f1f1f;" +
-      "border:1px solid #d0d0d0;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);" +
+      "div{display:block;box-sizing:border-box;padding:8px 12px;background:#fff6cc;color:#1f1f1f;" +
+      "border:1px solid #b8921a;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);" +
       "font-family:system-ui,sans-serif;line-height:1.5;text-align:left;white-space:normal;" +
       "overflow-wrap:anywhere;user-select:text;cursor:text}";
     const text = document.createElement("div");

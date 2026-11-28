@@ -1,6 +1,6 @@
 # Feature Map（browser-translator）
 
-対象: 基準ページでの置き換え翻訳（オン・オフ・原文の吹き出し）と対訳表示、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映。
+対象: 基準ページでの置き換え翻訳（オン・オフ・原文の吹き出し）と対訳表示、白いページ・暗いページでの吹き出しの色、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映。
 対象外（まだ手順がない）: 直列と並列の訳語統一の比較、用語集の語形の違い、react.dev 以外の React のページ、ページが訳文の段落を書き換えたときの訳し直し（react.dev では起きなかった）。訳文の品質の定量評価、Chrome 以外のブラウザ。
 
 この Map は手順と期待結果だけを持つ。各回の観測結果は `.pi/verification-evidence/<run>/run.md` に書く。
@@ -21,10 +21,23 @@
   - 原文の吹き出し（「Keep guardrails cheap.」の段落。CDP の `Input.dispatchMouseEvent` の `mouseMoved` で乗せる。観測値は `bubble`）:
     - `bubbleShowsOriginal`: 乗せて 0.2 秒では出ておらず、0.7 秒後に吹き出しが 1 つ出る。`<html>` の直下の目印付きの要素の open な Shadow DOM の中身が原文（翻訳前に page の main world の `WeakMap` に控えた段落の文字）、`font-size` が段落の計算済みの値と同じ、幅と左端が段落と同じ（誤差 1px）、`user-select` が `none` でない。段落に `title` 属性がない。
     - `bubblePlacement`: 段落を画面の中央に置くと吹き出しは段落の下、画面の下端に置く（下に入らない）と段落の上。どちらも「下に入れば下、入らず上に入れば上」の期待どおり。
+    - `bubbleColors`: 吹き出しの中の `div` の計算済みの `background-color` / `border-top-color` / `color` が `rgb(255, 246, 204)` / `rgb(184, 146, 26)` / `rgb(31, 31, 31)`（`#fff6cc`・`#b8921a`・`#1f1f1f`。元のページは固定の薄い黄）。観測値は `bubble.colors`。
     - `bubbleStaysOnHover`: マウスを吹き出しの中央へ動かして 1 秒後も残る。`bubbleHidesOnLeave`: 段落と吹き出しの外（左の余白）へ動かして 1 秒後に消える。
   - `offRestoresDom` / `offBadgeCleared`: オフ後、対象の全段落と `pre` の `textContent` と `outerHTML` が翻訳前と一致し（拡張は段落の `title` 属性に触れない）、吹き出しを含む拡張の目印（`data-browser-translator`）が 0、バッジが空。
 - **証拠**: `translate.json`、`translate-options.png`（`--server` のとき）、`translate-0-before.png`、`translate-1-top.png`、`translate-2-{cuga,knowledge,guardrails}.png`、`translate-4-bubble.png`（段落の下の吹き出し）、`translate-5-bubble-above.png`（段落の上の吹き出し）、`translate-3-off.png`。
-- **注意**: 訳文はモデルの出力なので、run ごとに文言は変わる。中に段落を持つ `li`（目次など）の直下の文字は訳さない（content.ts の shortcut）。吹き出しの見た目（白地・濃い文字・影）は `translate-4-bubble.png` / `translate-5-bubble-above.png` で目で確かめる。吹き出しの文字の選択とコピーそのものは CDP では見ない（手動の節）。対訳表示では吹き出しを出さない。
+- **注意**: 訳文はモデルの出力なので、run ごとに文言は変わる。中に段落を持つ `li`（目次など）の直下の文字は訳さない（content.ts の shortcut）。吹き出しの見た目（薄い黄 `#fff6cc`・枠 `#b8921a`・文字 `#1f1f1f`・影）は `translate-4-bubble.png` / `translate-5-bubble-above.png` で目で確かめる。白いページと暗いページで本文と区別できるかは下の「吹き出しの色（白いページ・暗いページ）」で見る。吹き出しの文字の選択とコピーそのものは CDP では見ない（手動の節）。対訳表示では吹き出しを出さない。
+
+## 吹き出しの色（白いページ・暗いページ）
+
+- **到達方法**: 設定画面で表示方法「置き換え」を保存し、https://react.dev/learn を `prefers-color-scheme: light`（白い背景）と `dark`（暗い背景）で開いてボタンを押し、訳した段落にマウスを乗せる。
+- **前提**: 「置き換え翻訳」と同じ。外部サイト react.dev にアクセスできること。
+- **操作**: `node scripts/verify-bubble-colors.ts <evidenceDir> --server=http://127.0.0.1:18080`。配色は CDP の `Emulation.setEmulatedMedia`（`features: [{ name: "prefers-color-scheme", value }]`）で切り替え、各配色でページを開き直す。マウスは `Input.dispatchMouseEvent` の `mouseMoved` で、`article` の 2 行以上の最初の訳した段落に乗せて 0.9 秒後に撮る。
+- **期待と観測**（`bubble-colors.json`）:
+  - `optionsSaved`: URL と `display: "replace"` が入った。
+  - `lightBubbleColors` / `darkBubbleColors`: 吹き出しが 1 つ出て、色が `bubbleColors` と同じ固定の値（ページの明暗で変わらない）。`light.bodyBackground` / `dark.bodyBackground` に body の背景色を残す（react.dev では白 `rgb(255, 255, 255)` と暗い `rgb(35, 39, 47)` の見込み）。
+  - 目視: `bubble-colors-light.png`・`bubble-colors-dark.png` で、吹き出しが本文（背景と下の段落）と区別できる。
+- **証拠**: `bubble-colors.json`、`bubble-colors-options.png`、`bubble-colors-light.png`、`bubble-colors-dark.png`。
+- **注意**: 区別できるかの判断は目視（checks は色の値だけ）。react.dev の配色が変われば `bodyBackground` も変わる。
 
 ## 対訳表示（基準ページ）
 
