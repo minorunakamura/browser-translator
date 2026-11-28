@@ -15,6 +15,7 @@ import {
   loadExtensionAndAttachWorker,
   sleep,
 } from "./cdp.ts";
+import { bubbleSide } from "../src/bubble.ts";
 import { applyOptions } from "./extension.ts";
 
 const REFERENCE_PAGE =
@@ -56,7 +57,8 @@ const SNAPSHOT = `(() => {
 
 // Runs in the page after translation: the acceptance observations of the reference page.
 // A paragraph counts as translated when it carries the replace mark or holds a bilingual translation (a
-// lang="ja" inserted element); out is the element that holds the translated text, source the original text.
+// lang="ja" inserted element); out is the element that holds the translated text, source the original text
+// (for a replaced paragraph, the text SOURCES recorded before translation).
 const OBSERVE = `(() => {
   const ja = /[\\u3040-\\u30ff\\u4e00-\\u9fff]/;
   const replaced = [...document.querySelectorAll('[data-browser-translator="translated"]')];
@@ -67,7 +69,7 @@ const OBSERVE = `(() => {
     return copy.textContent.replace(/\\s+/g, " ").trim();
   };
   const entries = [
-    ...replaced.map((el) => ({ el, out: el, source: el.title })),
+    ...replaced.map((el) => ({ el, out: el, source: window.__browserTranslatorVerifySources?.get(el) ?? "" })),
     ...added.map((out) => ({ el: out.parentElement, out, source: bareText(out.parentElement) })),
   ];
   const entryOf = (el) => entries.find((e) => e.el === el);
@@ -86,7 +88,6 @@ const OBSERVE = `(() => {
   const bySource = (start) => entries.find((e) => e.source.startsWith(start));
   const inline = (e) => e && {
     html: e.out.innerHTML,
-    title: e.el.title,
     source: e.source,
     // Bilingual: the translation is the paragraph's last child, a block below the original text.
     below: e.out !== e.el && e.el.lastElementChild === e.out && getComputedStyle(e.out).display === "block" &&
@@ -117,6 +118,73 @@ const OBSERVE = `(() => {
     notice: [...document.querySelectorAll('body > [data-browser-translator="inserted"]')].map((n) => n.textContent),
   };
 })()`;
+
+// Runs in the page before translation: each paragraph's text (whitespace collapsed, as content.ts reads it), kept
+// in the page's main world and not in the DOM.
+const SOURCES = `(() => {
+  window.__browserTranslatorVerifySources = new WeakMap();
+  for (const el of document.body.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6"))
+    window.__browserTranslatorVerifySources.set(el, el.textContent.replace(/\\s+/g, " ").trim());
+})()`;
+
+// Runs in the page: the replaced paragraph whose source starts with start, scrolled to block, and the bubble.
+const bubbleObservation = (start: string, block: string) => `(() => {
+  const el = [...document.querySelectorAll('[data-browser-translator="translated"]')]
+    .find((e) => (window.__browserTranslatorVerifySources.get(e) ?? "").startsWith(${JSON.stringify(start)}));
+  if (!el) return null;
+  ${block ? `el.scrollIntoView({ block: ${JSON.stringify(block)} });` : ""}
+  const r = el.getBoundingClientRect();
+  const hosts = [...document.querySelectorAll('[data-browser-translator="inserted"]')].filter((h) => h.shadowRoot);
+  const host = hosts[0];
+  const text = host?.shadowRoot.querySelector("div");
+  const b = host?.getBoundingClientRect();
+  return {
+    paragraph: { top: r.top, bottom: r.bottom, left: r.left, width: r.width, x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 10),
+      fontSize: getComputedStyle(el).fontSize, hasTitle: el.hasAttribute("title"),
+      source: window.__browserTranslatorVerifySources.get(el) },
+    viewportHeight: document.documentElement.clientHeight,
+    bubbles: hosts.length,
+    bubble: host && {
+      parent: host.parentElement.localName,
+      shadowMode: host.shadowRoot.mode,
+      text: text?.textContent,
+      fontSize: text && getComputedStyle(text).fontSize,
+      userSelect: text && getComputedStyle(text).userSelect,
+      top: b.top, bottom: b.bottom, left: b.left, width: b.width, height: b.height,
+      x: b.left + b.width / 2, y: b.top + b.height / 2,
+    },
+  };
+})()`;
+
+interface BubbleObservation {
+  paragraph: {
+    top: number;
+    bottom: number;
+    left: number;
+    width: number;
+    x: number;
+    y: number;
+    fontSize: string;
+    hasTitle: boolean;
+    source: string;
+  };
+  viewportHeight: number;
+  bubbles: number;
+  bubble?: {
+    parent: string;
+    shadowMode: string;
+    text: string;
+    fontSize: string;
+    userSelect: string;
+    top: number;
+    bottom: number;
+    left: number;
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+  };
+}
 
 interface Snapshot {
   tag: string;
@@ -212,6 +280,7 @@ try {
     });
 
   const before: Snapshot[] = await evaluate(cdp, page, SNAPSHOT);
+  await evaluate(cdp, page, SOURCES);
   await screenshot(cdp, page, `${mode}-0-before.png`);
   await clickToolbarButton();
   // Without the tabs permission the URL becomes visible only after the click grants activeTab.
@@ -299,16 +368,100 @@ try {
     );
     checks.noLeftoverTags = o.leftoverTags.length === 0;
     if (mode === "translate") {
-      // Hover: the original text is the element's title, shown as a tooltip by the browser.
-      const hoverTitle: string = await evaluate(
-        cdp,
-        page,
-        `(() => { const el = [...document.querySelectorAll('[data-browser-translator="translated"]')].find((e) => (e.title || "").startsWith("Keep guardrails cheap.")); return el ? el.title : null; })()`,
-      );
-      record.hoverTitle = hoverTitle;
-      checks.hoverShowsOriginal =
-        typeof hoverTitle === "string" &&
-        hoverTitle.startsWith("Keep guardrails cheap.");
+      // Hover: the original-text bubble (a shadow root under <html>) after the mouse rests on a paragraph.
+      const move = (x: number, y: number) =>
+        cdp.send(
+          "Input.dispatchMouseEvent",
+          { type: "mouseMoved", x, y },
+          page,
+        );
+      const observeBubble = (block = ""): Promise<BubbleObservation | null> =>
+        evaluate(cdp, page, bubbleObservation("Keep guardrails cheap.", block));
+      // A point in the left margin, outside every paragraph.
+      const away = async () => {
+        await move(5, 500);
+        await sleep(1000);
+      };
+      const hover = async (block: string, name: string) => {
+        await away();
+        const at = await observeBubble(block);
+        if (!at)
+          throw new Error(
+            "replaced paragraph Keep guardrails cheap. not found",
+          );
+        await sleep(300);
+        const p = (await observeBubble())?.paragraph ?? at.paragraph;
+        await move(p.x, p.y);
+        await sleep(200);
+        const early = await observeBubble();
+        await sleep(500);
+        const shown = await observeBubble();
+        await screenshot(cdp, page, name);
+        return { early: early?.bubbles ?? 0, shown };
+      };
+      const matches = (bo: BubbleObservation | null | undefined) => {
+        const b = bo?.bubble;
+        if (!bo || !b) return false;
+        return (
+          b.text === bo.paragraph.source &&
+          b.fontSize === bo.paragraph.fontSize &&
+          Math.abs(b.width - bo.paragraph.width) <= 1 &&
+          Math.abs(b.left - bo.paragraph.left) <= 1 &&
+          b.userSelect !== "none" &&
+          b.parent === "html" &&
+          b.shadowMode === "open" &&
+          !bo.paragraph.hasTitle
+        );
+      };
+      // The side content.ts must pick: below when it fits under the paragraph, else above when that fits.
+      const side = (bo: BubbleObservation) => {
+        const b = bo.bubble;
+        if (!b) return "none";
+        if (b.top >= bo.paragraph.bottom) return "below";
+        if (b.bottom <= bo.paragraph.top) return "above";
+        return "overlap";
+      };
+      const expectedSide = (bo: BubbleObservation) =>
+        bubbleSide(
+          bo.paragraph.top,
+          bo.paragraph.bottom,
+          bo.bubble?.height ?? 0,
+          bo.viewportHeight,
+        );
+
+      const center = await hover("center", "translate-4-bubble.png");
+      const centerShown = center.shown;
+      let onBubble: BubbleObservation | null = null;
+      if (centerShown?.bubble) {
+        await move(centerShown.bubble.x, centerShown.bubble.y);
+        await sleep(1000);
+        onBubble = await observeBubble();
+      }
+      await away();
+      const left = await observeBubble();
+      const end = await hover("end", "translate-5-bubble-above.png");
+      await away();
+      record.bubble = {
+        center: { ...center, side: centerShown && side(centerShown) },
+        onBubble: onBubble && { bubbles: onBubble.bubbles },
+        afterLeaving: left && { bubbles: left.bubbles },
+        end: { ...end, side: end.shown && side(end.shown) },
+      };
+      checks.bubbleShowsOriginal =
+        center.early === 0 &&
+        centerShown?.bubbles === 1 &&
+        matches(centerShown) &&
+        centerShown.paragraph.source.startsWith("Keep guardrails cheap.");
+      checks.bubblePlacement =
+        !!centerShown &&
+        side(centerShown) === expectedSide(centerShown) &&
+        side(centerShown) === "below" &&
+        !!end.shown &&
+        matches(end.shown) &&
+        side(end.shown) === expectedSide(end.shown) &&
+        side(end.shown) === "above";
+      checks.bubbleStaysOnHover = onBubble?.bubbles === 1;
+      checks.bubbleHidesOnLeave = left?.bubbles === 0;
     } else {
       // Bilingual: every translation is a block at the end of its paragraph, and the page's own DOM is untouched.
       const changed = before
