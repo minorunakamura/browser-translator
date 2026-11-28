@@ -100,6 +100,8 @@ export async function applyOptions(
 export interface WorkerRequest {
   url: string;
   started: number;
+  // Wall clock (seconds since the epoch) when sent, for comparing with Date.now() in a page.
+  wallTime?: number;
   finished?: number;
   failed?: string;
   body?: { model?: string; prompt?: string; temperature?: number };
@@ -119,7 +121,11 @@ export async function recordWorkerRequests(
     if (msg.sessionId !== worker) return;
     const p = msg.params;
     if (msg.method === "Network.requestWillBeSent") {
-      const r: WorkerRequest = { url: p.request.url, started: p.timestamp };
+      const r: WorkerRequest = {
+        url: p.request.url,
+        started: p.timestamp,
+        wallTime: p.wallTime,
+      };
       if (p.request.postData) r.body = JSON.parse(p.request.postData);
       byId.set(p.requestId, r);
       requests.push(r);

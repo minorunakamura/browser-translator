@@ -7,9 +7,9 @@ import type {
   TranslateRequest,
   TranslateResponse,
 } from "./background.ts";
-import { startBubble } from "./bubble.ts";
+import { type BubbleLook, startBubble } from "./bubble.ts";
 import { noticeElement } from "./notice.ts";
-import { toggleReader } from "./reader.ts";
+import { type OpenReader, toggleReader } from "./reader.ts";
 import { loadSettings } from "./settings.ts";
 import {
   type HistoryPair,
@@ -42,9 +42,21 @@ interface Paragraph {
   added?: Element;
 }
 
-// Survives between injections into the same document; set while translation mode is on.
+// Survives between injections into the same document.
 declare global {
+  // Set while translation mode is on (or its settings load).
   var browserTranslatorOff: (() => void) | undefined;
+  // Set while translation mode is on; the reader tells it when it opens and closes.
+  var browserTranslatorMode:
+    | {
+        readerOpened: (reader: OpenReader) => void;
+        readerClosed: () => void;
+        // The page's own children of a replaced paragraph, so the reader copies the original text.
+        originalOf: (el: Element) => Node[] | undefined;
+      }
+    | undefined;
+  // Turns translation mode on or off (the reader's translate button).
+  var browserTranslatorToggle: (() => void) | undefined;
   // Set by the service worker right before injecting this script; read and cleared once.
   var browserTranslatorCommand: "reader" | undefined;
 }
@@ -146,33 +158,37 @@ function onPageHide(e: PageTransitionEvent): void {
   if (e.persisted) globalThis.browserTranslatorOff?.();
 }
 
-function start(serial: boolean, bilingual: boolean): void {
-  let active = true;
+interface TranslatorOptions {
+  serial: boolean;
+  bilingual: boolean;
+  onUnreachable: (message: string) => void;
+  // The reader's: its bubble look and the shadow root holding root.
+  bubbleLook?: () => BubbleLook;
+  shadow?: ShadowRoot;
+}
+
+// Translates the paragraphs under root (document.body or the reader's article). Nothing is sent before the first
+// resume(); pause() stops new requests and the observers, resume() looks at root again and queues what is not
+// translated yet and what the page added or changed meanwhile; stop() also restores the original DOM.
+function translator(root: HTMLElement, options: TranslatorOptions) {
+  const { serial, bilingual } = options;
+  let running = false;
+  // Bumped by pause(): a response to a request sent before is dropped (its paragraph was queued again).
+  let generation = 0;
   // Serial mode: the last paragraph that was translated, sent as translation history with the next one.
   let history: HistoryPair | undefined;
   const inserted: Element[] = [];
-  // Every paragraph seen in this mode; paragraphs are the ones in the document, in document order.
+  // Every paragraph seen under root; paragraphs are the connected ones, in document order.
   const byElement = new Map<Element, Paragraph>();
   let paragraphs: Paragraph[] = [];
   const pending = new Set<Paragraph>();
+  const inFlight = new Set<Paragraph>();
   let workers = 0;
 
   function insertMarked(el: HTMLElement, parent: Element): void {
     el.setAttribute(MARK, "inserted");
     parent.append(el);
     inserted.push(el);
-  }
-
-  function showConnectionError(message: string): void {
-    if (!active) return;
-    active = false; // stop sending; the next button press turns the mode off and removes the notice
-    status("error");
-    insertMarked(
-      noticeElement(
-        `Browser Translator: llama-server に接続できません（${message}）`,
-      ),
-      document.body,
-    );
   }
 
   function markFailed(p: Paragraph, reason: string): void {
@@ -204,6 +220,17 @@ function start(serial: boolean, bilingual: boolean): void {
   }
 
   async function translateParagraph(p: Paragraph): Promise<void> {
+    const gen = generation;
+    inFlight.add(p);
+    try {
+      await send(p, gen);
+    } finally {
+      // After a pause the paragraph may be in flight again under the new generation.
+      if (gen === generation) inFlight.delete(p);
+    }
+  }
+
+  async function send(p: Paragraph, gen: number): Promise<void> {
     const source = p.source;
     const connected = paragraphs.filter((x) => x.el.isConnected);
     const i = connected.indexOf(p);
@@ -232,11 +259,11 @@ function start(serial: boolean, bilingual: boolean): void {
         history,
       };
       const res: TranslateResponse = await chrome.runtime.sendMessage(req);
-      if (!active) return;
+      if (gen !== generation) return;
       // The page changed the paragraph while it was being translated; the change queued it again.
       if (p.source !== source || !p.el.isConnected) return;
       if (!res.ok) {
-        if (res.unreachable) showConnectionError(res.message);
+        if (res.unreachable) options.onUnreachable(res.message);
         else if (res.truncated) {
           reason = "長すぎて途中で切れました";
           continue; // treated like a tag mismatch: retry once, then keep the original
@@ -255,7 +282,7 @@ function start(serial: boolean, bilingual: boolean): void {
   }
 
   function next(): Paragraph | undefined {
-    if (!active) return undefined;
+    if (!running) return undefined;
     let p: Paragraph | undefined;
     for (const q of pending)
       if (q.visible) {
@@ -277,7 +304,7 @@ function start(serial: boolean, bilingual: boolean): void {
   }
 
   function startWorkers(): void {
-    if (!active) return;
+    if (!running) return;
     const idle = Math.min(
       (serial ? 1 : PARALLEL_REQUESTS) - workers,
       pending.size,
@@ -285,7 +312,7 @@ function start(serial: boolean, bilingual: boolean): void {
     for (let n = 0; n < idle; n++) {
       workers++;
       worker().catch((e: unknown) =>
-        showConnectionError(e instanceof Error ? e.message : String(e)),
+        options.onUnreachable(e instanceof Error ? e.message : String(e)),
       );
     }
   }
@@ -336,50 +363,75 @@ function start(serial: boolean, bilingual: boolean): void {
     return true;
   }
 
-  // Paragraphs added or changed by the page (an SPA keeps the same document, so its new pages arrive here too).
-  const mutations = new MutationObserver((records) => {
-    if (!active) return;
+  // Seen paragraphs the page changed are queued again; new paragraphs are added.
+  function collect(els: Iterable<HTMLElement>): void {
     const added: HTMLElement[] = [];
-    for (const el of touchedParagraphs(records)) {
+    for (const el of els) {
       const p = byElement.get(el);
       if (p) {
         if (changedByPage(p) && isParagraph(el)) pending.add(p);
       } else if (!el.hasAttribute(MARK) && isParagraph(el)) added.push(el);
     }
-    // Not left to the IntersectionObserver: it reports only when the page renders (not in a hidden tab).
     if (added.length > 0) addParagraphs(added);
+  }
+
+  // Paragraphs added or changed by the page (an SPA keeps the same document, so its new pages arrive here too).
+  const mutations = new MutationObserver((records) => {
+    if (!running) return;
+    collect(touchedParagraphs(records));
+    // Not left to the IntersectionObserver: it reports only when the page renders (not in a hidden tab).
     startWorkers();
   });
 
-  addParagraphs(
-    [...document.body.querySelectorAll<HTMLElement>(PARAGRAPHS)].filter(
-      isParagraph,
-    ),
-  );
-  mutations.observe(document.body, {
-    childList: true,
-    subtree: true,
-    characterData: true,
-  });
-
-  addEventListener("pagehide", onPageHide);
-
   // Hovering a replaced paragraph shows its original text; the bilingual display shows it already.
-  const stopBubble = bilingual
-    ? () => {}
-    : startBubble((target) => {
-        const el = target.closest(`[${MARK}="translated"]`);
-        const p = el ? byElement.get(el) : undefined;
-        // A paragraph whose translation the page replaced has no original to show.
-        return p?.shown === undefined ? undefined : p;
-      });
+  // The page's bubbles are off while the reader is open, so none shows over it.
+  let stopBubble: (() => void) | undefined;
+  function showBubbles(on: boolean): void {
+    stopBubble?.();
+    stopBubble =
+      on && !bilingual
+        ? startBubble(
+            (target) => {
+              const el = target.closest(`[${MARK}="translated"]`);
+              const p = el ? byElement.get(el) : undefined;
+              // A paragraph whose translation the page replaced has no original to show.
+              return p?.shown === undefined ? undefined : p;
+            },
+            options.bubbleLook,
+            options.shadow,
+          )
+        : undefined;
+  }
+  showBubbles(true);
 
-  globalThis.browserTranslatorOff = () => {
-    active = false;
-    stopBubble();
-    removeEventListener("pagehide", onPageHide);
+  function pause(): void {
+    if (!running) return;
+    running = false;
+    generation++;
     mutations.disconnect();
     intersection.disconnect();
+    // Their responses are dropped; resume() sends them again.
+    for (const p of inFlight) pending.add(p);
+    inFlight.clear();
+  }
+
+  function resume(): void {
+    if (running) return;
+    running = true;
+    collect(root.querySelectorAll<HTMLElement>(PARAGRAPHS));
+    for (const p of paragraphs) intersection.observe(p.el);
+    mutations.observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    // Every observe() reports once first (after a disconnect too), and that report starts the workers, so the
+    // visible paragraphs are known before.
+  }
+
+  function stop(): void {
+    pause();
+    showBubbles(false);
     for (const p of byElement.values()) {
       p.added?.remove();
       // A translation the page has already replaced is left as the page made it.
@@ -389,18 +441,106 @@ function start(serial: boolean, bilingual: boolean): void {
       p.shown = undefined;
     }
     for (const el of inserted) el.remove();
+  }
+
+  const originalOf = (el: Element) => {
+    const p = byElement.get(el);
+    return p?.shown === undefined ? undefined : p.original;
+  };
+
+  return { pause, resume, stop, showBubbles, originalOf };
+}
+
+// Translation mode of the tab: the page is translated, except while the reader is open, when only the reader is.
+function start(serial: boolean, bilingual: boolean): void {
+  let failed = false;
+  let notice: HTMLElement | undefined;
+  let inReader: ReturnType<typeof translator> | undefined;
+
+  function showConnectionError(message: string): void {
+    if (failed) return;
+    failed = true; // stop sending; the next button press turns the mode off and removes the notice
+    page.pause();
+    inReader?.pause();
+    status("error");
+    globalThis.browserTranslatorReader?.showMode("error");
+    notice = noticeElement(
+      `Browser Translator: llama-server に接続できません（${message}）`,
+    );
+    notice.setAttribute(MARK, "inserted");
+    // Outside body while the reader is open: a body that makes its own stacking context would keep it under the
+    // reader's host; after the host in <html> with a higher z-index it is above.
+    (globalThis.browserTranslatorReader
+      ? document.documentElement
+      : document.body
+    ).append(notice);
+  }
+
+  const page = translator(document.body, {
+    serial,
+    bilingual,
+    onUnreachable: showConnectionError,
+  });
+
+  function readerOpened(reader: OpenReader): void {
+    page.pause();
+    page.showBubbles(false);
+    inReader?.stop();
+    inReader = translator(reader.article, {
+      serial,
+      bilingual,
+      onUnreachable: showConnectionError,
+      bubbleLook: reader.bubbleLook,
+      shadow: reader.shadow,
+    });
+    if (failed) {
+      if (notice) document.documentElement.append(notice);
+      reader.showMode("error");
+      return;
+    }
+    inReader.resume();
+    reader.showMode("on");
+  }
+
+  // The reader's translations are dropped (opening it again translates again).
+  function readerClosed(): void {
+    inReader?.stop();
+    inReader = undefined;
+    page.showBubbles(true);
+    if (!failed) page.resume();
+  }
+
+  globalThis.browserTranslatorMode = {
+    readerOpened,
+    readerClosed,
+    originalOf: page.originalOf,
+  };
+  addEventListener("pagehide", onPageHide);
+
+  globalThis.browserTranslatorOff = () => {
+    page.stop();
+    inReader?.stop();
+    notice?.remove();
+    removeEventListener("pagehide", onPageHide);
+    globalThis.browserTranslatorMode = undefined;
     globalThis.browserTranslatorOff = undefined;
+    globalThis.browserTranslatorReader?.showMode("off");
     status("off");
   };
   status("on");
+  const reader = globalThis.browserTranslatorReader;
+  // Turned on while the reader is open: the page waits until it closes.
+  if (reader) readerOpened(reader);
+  else page.resume();
 }
 
-const command = globalThis.browserTranslatorCommand;
-globalThis.browserTranslatorCommand = undefined;
-if (command === "reader") toggleReader();
-else if (globalThis.browserTranslatorOff) globalThis.browserTranslatorOff();
-else {
-  // A second injection while settings load cancels the pending start; no "off" status since the badge is not on yet.
+// The toolbar button and the reader's translate button.
+function toggleMode(): void {
+  if (globalThis.browserTranslatorOff) {
+    globalThis.browserTranslatorOff();
+    return;
+  }
+  // A second toggle while settings load cancels the pending start; no "off" status since the badge is not on yet.
   let cancelled = false;
   globalThis.browserTranslatorOff = () => {
     cancelled = true;
@@ -411,3 +551,9 @@ else {
       start(settings.mode === "serial", settings.display === "bilingual");
   }, console.error);
 }
+
+globalThis.browserTranslatorToggle = toggleMode;
+const command = globalThis.browserTranslatorCommand;
+globalThis.browserTranslatorCommand = undefined;
+if (command === "reader") toggleReader();
+else toggleMode();

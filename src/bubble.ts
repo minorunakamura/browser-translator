@@ -24,9 +24,30 @@ export interface Original {
   source: string;
 }
 
+// Colors (background, 1px border, text) and font of a bubble.
+export interface BubbleLook {
+  background: string;
+  border: string;
+  color: string;
+  fontFamily: string;
+}
+
+// A fixed pale yellow (sticky-note like) on every page, so the bubble stands out from a white page too.
+export const PAGE_BUBBLE_LOOK: BubbleLook = {
+  background: "#fff6cc",
+  border: "#b8921a",
+  color: "#1f1f1f",
+  fontFamily: "system-ui,sans-serif",
+};
+
 // Starts showing bubbles for the paragraphs originalAt finds under the mouse; returns the function that stops.
+// lookOf is read for each bubble shown, so a change (the reader's background or font) applies to the next one.
+// paragraphRoot: the shadow root holding the paragraphs (the reader's). A mouse move between two elements of the same
+// shadow tree does not reach the document, so it is listened to there too.
 export function startBubble(
   originalAt: (target: Element) => Original | undefined,
+  lookOf: () => BubbleLook = () => PAGE_BUBBLE_LOOK,
+  paragraphRoot?: ShadowRoot,
 ): () => void {
   let host: HTMLElement | undefined;
   let shownFor: HTMLElement | undefined;
@@ -58,11 +79,11 @@ export function startBubble(
     host.style.cssText = `all:initial;display:block;position:absolute;z-index:2147483647;box-sizing:border-box;width:${rect.width}px;left:${rect.left + scrollX}px;top:0`;
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    // A fixed pale yellow (sticky-note like) on every page, so the bubble stands out from a white page too.
+    const look = lookOf();
     style.textContent =
-      "div{display:block;box-sizing:border-box;padding:8px 12px;background:#fff6cc;color:#1f1f1f;" +
-      "border:1px solid #b8921a;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);" +
-      "font-family:system-ui,sans-serif;line-height:1.5;text-align:left;white-space:normal;" +
+      `div{display:block;box-sizing:border-box;padding:8px 12px;background:${look.background};color:${look.color};` +
+      `border:1px solid ${look.border};border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.25);` +
+      `font-family:${look.fontFamily};line-height:1.5;text-align:left;white-space:normal;` +
       "overflow-wrap:anywhere;user-select:text;cursor:text}";
     const text = document.createElement("div");
     text.style.fontSize = getComputedStyle(original.el).fontSize;
@@ -82,17 +103,27 @@ export function startBubble(
     shownFor = original.el;
   }
 
-  function onOver(e: MouseEvent): void {
-    const target = e.target;
-    // Events from inside the shadow root reach the document retargeted to the host.
-    if (target === host) {
+  // A move from outside into the shadow tree reaches both the shadow root and the document.
+  const seen = new WeakSet<Event>();
+
+  function onOver(e: Event): void {
+    if (!(e instanceof MouseEvent) || seen.has(e)) return;
+    seen.add(e);
+    // Events from inside a shadow root (the bubble's, the reader's) reach the document retargeted to its host;
+    // the first node of the composed path is the element under the mouse.
+    const path = e.composedPath();
+    const target = path[0];
+    if (host && path.includes(host)) {
       cancelHide();
       // A paragraph crossed in the gap on the way to the bubble must not replace it.
       clearTimeout(showTimer);
       waitingFor = undefined;
       return;
     }
-    const original = target instanceof Element ? originalAt(target) : undefined;
+    // A paragraph holding a shadow host of the page: closest() stops at that shadow root, the retargeted host does not.
+    const original =
+      (target instanceof Element ? originalAt(target) : undefined) ??
+      (e.target instanceof Element ? originalAt(e.target) : undefined);
     if (shownFor && original?.el === shownFor) {
       cancelHide();
       return;
@@ -112,19 +143,25 @@ export function startBubble(
   }
 
   // The mouse left the window.
-  function onOut(e: MouseEvent): void {
-    if (e.relatedTarget) return;
+  function onOut(e: Event): void {
+    if (!(e instanceof MouseEvent) || e.relatedTarget || seen.has(e)) return;
+    seen.add(e);
     clearTimeout(showTimer);
     waitingFor = undefined;
     if (host && hideTimer === undefined)
       hideTimer = setTimeout(hide, HIDE_DELAY_MS);
   }
 
-  document.addEventListener("mouseover", onOver, true);
-  document.addEventListener("mouseout", onOut, true);
+  const roots = paragraphRoot ? [document, paragraphRoot] : [document];
+  for (const root of roots) {
+    root.addEventListener("mouseover", onOver, true);
+    root.addEventListener("mouseout", onOut, true);
+  }
   return () => {
-    document.removeEventListener("mouseover", onOver, true);
-    document.removeEventListener("mouseout", onOut, true);
+    for (const root of roots) {
+      root.removeEventListener("mouseover", onOver, true);
+      root.removeEventListener("mouseout", onOut, true);
+    }
     clearTimeout(showTimer);
     hide();
   };

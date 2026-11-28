@@ -1,6 +1,7 @@
 // The reader: the article of the page at the moment it opens (extracted with Readability), drawn in a shadow root
 // on a full-window layer over the current tab. Only the layer scrolls, so the page stays where it was.
 import { Readability } from "@mozilla/readability";
+import type { BubbleLook } from "./bubble.ts";
 import { noticeElement } from "./notice.ts";
 
 const MARK = "data-browser-translator";
@@ -25,6 +26,12 @@ const READER_THEMES = {
     code: "#f4f4f4",
     link: "#1a5fb4",
   },
+} as const;
+// The original-text bubble inside the reader, per background (Plan「吹き出しの見た目」).
+const READER_BUBBLES = {
+  black: { background: "#2d2d2d", border: "#5a5a5a", color: "#e6e6e6" },
+  sepia: { background: "#fff6cc", border: "#b8921a", color: "#3e2f22" },
+  white: { background: "#fff6cc", border: "#b8921a", color: "#1f1f1f" },
 } as const;
 const READER_FONTS = {
   gothic:
@@ -86,9 +93,22 @@ async function loadLook(): Promise<ReaderLook> {
   return validLook(reader);
 }
 
-// Survives between injections into the same document; set while the reader is open (or loading).
+// The open reader, as translation mode sees it.
+export interface OpenReader {
+  article: HTMLElement;
+  shadow: ShadowRoot;
+  // The bubble for the reader's current background and font.
+  bubbleLook: () => BubbleLook;
+  // Shows translation mode's state on the bar's translate button.
+  showMode: (state: "on" | "off" | "error") => void;
+}
+
+// Survives between injections into the same document.
 declare global {
+  // Set while the reader is open (or loading).
   var browserTranslatorReaderClose: (() => void) | undefined;
+  // Set while the reader is open.
+  var browserTranslatorReader: OpenReader | undefined;
 }
 
 // Code blocks built from one element per line (react.dev's div.cm-line with a trailing br) become paragraphs
@@ -108,9 +128,23 @@ function flattenCodeBlocks(copy: Document): void {
   });
 }
 
+// The copy of a translated page gets the original text back: replaced paragraphs their own children, and the
+// extension's inserted elements (bilingual translations, markers, notices, bubbles) are dropped.
+function untranslate(copy: Document): void {
+  const translated = `[${MARK}="translated"]`;
+  const live = [...document.querySelectorAll(translated)];
+  [...copy.querySelectorAll(translated)].forEach((el, i) => {
+    const original = globalThis.browserTranslatorMode?.originalOf(live[i]);
+    if (original) el.replaceChildren(...original.map((n) => n.cloneNode(true)));
+    el.removeAttribute(MARK);
+  });
+  for (const el of copy.querySelectorAll(`[${MARK}="inserted"]`)) el.remove();
+}
+
 function extract(): { title: string; content: string } | undefined {
   const copy = document.cloneNode(true);
   if (!(copy instanceof Document)) return undefined;
+  untranslate(copy);
   flattenCodeBlocks(copy);
   const article = new Readability(copy).parse();
   if (!article?.content || !article.textContent?.trim()) return undefined;
@@ -243,14 +277,21 @@ function show(
     apply();
     chrome.storage.local.set({ reader: look }).catch(console.error);
   };
-  // Translation inside the reader comes later; the button is in place but does nothing yet.
+  // The same translation mode as the toolbar button.
   const translateButton = button(
     "翻訳",
-    () => {},
-    "リーダーの中の翻訳はまだ使えません",
+    () => globalThis.browserTranslatorToggle?.(),
+    "翻訳モードの切り替え（ツールバーのボタンと同じ）",
   );
-  translateButton.disabled = true;
   translateButton.dataset.action = "translate";
+  // data-state is on, off or error, like the badge (ON, empty, ERR).
+  const showMode = (state: "on" | "off" | "error") => {
+    translateButton.setAttribute("aria-pressed", String(state !== "off"));
+    translateButton.dataset.state = state;
+    translateButton.textContent =
+      state === "error" ? "翻訳 ERR" : state === "on" ? "翻訳 ON" : "翻訳 OFF";
+  };
+  showMode(globalThis.browserTranslatorMode ? "on" : "off");
   const themeButtons = (
     [
       ["black", "黒"],
@@ -375,6 +416,8 @@ function show(
     removeEventListener("keydown", onKeyDown, true);
     removeEventListener("keyup", onKeyUp, true);
     removeEventListener("pagehide", onPageHide);
+    globalThis.browserTranslatorReader = undefined;
+    globalThis.browserTranslatorMode?.readerClosed();
     host.remove();
     previousFocus?.focus({ preventScroll: true });
     // instant: a page with scroll-behavior:smooth would otherwise still be moving when a #… link follows.
@@ -390,6 +433,18 @@ function show(
   document.documentElement.append(host);
   layer.focus({ preventScroll: true });
   globalThis.browserTranslatorReaderClose = close;
+  globalThis.browserTranslatorReader = {
+    article: body,
+    shadow,
+    bubbleLook: () => ({
+      ...READER_BUBBLES[look.theme],
+      fontFamily: READER_FONTS[look.font],
+    }),
+    showMode,
+  };
+  globalThis.browserTranslatorMode?.readerOpened(
+    globalThis.browserTranslatorReader,
+  );
 }
 
 // Opens the reader, or closes it when it is open.

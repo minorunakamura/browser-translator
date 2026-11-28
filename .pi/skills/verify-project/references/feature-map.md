@@ -1,6 +1,6 @@
 # Feature Map（browser-translator）
 
-対象: 基準ページでの置き換え翻訳（オン・オフ・原文の吹き出し）と対訳表示、白いページ・暗いページでの吹き出しの色、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映、リーダー表示（翻訳なし）。
+対象: 基準ページでの置き換え翻訳（オン・オフ・原文の吹き出し）と対訳表示、白いページ・暗いページでの吹き出しの色、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映、リーダー表示、リーダーの中の翻訳（翻訳モードとの統合・リーダーの中の吹き出し・接続エラーの通知）。
 対象外（まだ手順がない）: 直列と並列の訳語統一の比較、用語集の語形の違い、react.dev 以外の React のページ、ページが訳文の段落を書き換えたときの訳し直し（react.dev では起きなかった）。訳文の品質の定量評価、Chrome 以外のブラウザ。
 
 この Map は手順と期待結果だけを持つ。各回の観測結果は `.pi/verification-evidence/<run>/run.md` に書く。
@@ -106,12 +106,12 @@
 ## リーダー表示
 
 - **到達方法**: ツールバーの拡張のボタンかページを右クリックして「リーダー表示」、またはショートカット `Alt+Shift+R`（Mac は Option+Shift+R）。同じ操作でもう一度押すと閉じる。✕・Esc でも閉じる。
-- **前提**: 外部サイト（基準ページ、https://react.dev/learn 、https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/table ）にアクセスできること。llama-server は不要（リーダーの中はまだ翻訳しない）。
+- **前提**: 外部サイト（基準ページ、https://react.dev/learn 、https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/table ）にアクセスできること。llama-server は不要（翻訳モードはオフのまま。リーダーの中の翻訳は「リーダーの中の翻訳・吹き出し」）。
 - **操作**: `timeout 400 node scripts/verify-reader.ts <evidenceDir>`。各ページの最初の開閉は CDP のキー入力でショートカットを押し、以降は service worker の `toggleReaderTab(tabId)` を呼ぶ。バー・リンクは `Input.dispatchMouseEvent`、Esc は `Input.dispatchKeyEvent`。
 - **期待と観測**（`reader.json` の `checks` と `observed`）:
   - `commandAssigned`: `chrome.commands.getAll()` に `toggle-reader` があり、ショートカットが割り当てられている（Mac では `⌥⇧R`）。
   - `shortcutOpens` / `reactRendered`: ショートカットで `<html>` 直下の目印付きの `position:fixed` の要素（open な Shadow DOM）が 1 つでき、見出し・段落・`pre` が描かれる。
-  - `firstOpenBlack` / `defaultLook`: 保存値なし（一時プロファイル）で初めて開くと背景 `rgb(30, 30, 30)`・文字 `rgb(212, 212, 212)`、ゴシック・18px・40em（720px）。`translateButtonInert`: バーの翻訳ボタンは押せない（#14 では動かさない）。
+  - `firstOpenBlack` / `defaultLook`: 保存値なし（一時プロファイル）で初めて開くと背景 `rgb(30, 30, 30)`・文字 `rgb(212, 212, 212)`、ゴシック・18px・40em（720px）。`translateButtonOff`: 翻訳オフで開くと、バーの翻訳ボタンは押せて（disabled でない）`data-state="off"`・`aria-pressed="false"`。
   - `reactPreSame`: react.dev/learn のリーダーの `pre` の数が元のページと同じで、中に `p`・`div` がなく、各 `pre` の行数・各行の字下げと文字が元のページ（`.cm-line` ごと）と一致する。行の間が空いていないかは `reader-react-2-code.png` を目で確かめる。
   - `onlyReaderScrolls`: ホイールでリーダーの中がスクロールし、ページの `scrollY` は変わらない。
   - `barTheme` / `barFont` / `barSize` / `barWidth`: セピア・白の背景色と文字色、明朝（`pre` は等幅のまま）、文字 20px、行幅 45em（900px）が計算済みスタイルに出る。`lookStored`: `chrome.storage.local` の `reader` に入る。`reopenSameLook`: ✕ で閉じて開き直すと同じ値。`observed.fonts`: ゴシック・明朝それぞれの `CSS.getPlatformFontsForNode`（実際のフォント名）。
@@ -123,7 +123,41 @@
   - `hfRendered` / `mdnRendered`（と `*Closed`）: 基準ページと MDN の `table` のページでも開いて描かれ（MDN は表あり）、閉じると 0。`observed.{react,hf,mdn}` に元のページの本文の範囲とリーダーの見出し・見出しのアンカー・表・画像・`pre` の数（記録値）。
   - `emptyNotOpened` / `emptyNoticeGoes`: 本文のないページ（既定は Google のロゴ画像の URL。`--empty=` で変えられる）では開かず、右上に「このページはリーダー表示にできません」の通知が出て、数秒後に目印 0。
 - **証拠**: `reader.json`、`reader-react-{1-open,2-code,3-white-mincho,4-link}.png`、`reader-hf-{1-open,2-code}.png`、`reader-mdn-{1-open,2-table}.png`、`reader-empty-notice.png`。
-- **注意**: 右クリックメニューを CDP から押す手段はない（手動の節）。ショートカットは CDP のキー入力で発火するが、物理キーではない。Readability の抽出結果はページの変更で変わる。リーダーの中の翻訳・吹き出しは #15。
+- **注意**: 右クリックメニューを CDP から押す手段はない（手動の節）。ショートカットは CDP のキー入力で発火するが、物理キーではない。Readability の抽出結果はページの変更で変わる。リーダーの中の翻訳・吹き出しは次の節。
+
+## リーダーの中の翻訳・吹き出し
+
+- **到達方法**: 設定画面で表示方法を選んで保存し、基準ページか https://react.dev/learn で、ツールバーのボタンで翻訳モードをオンにしてからリーダーを開く（またはリーダーを開いてからバーの「翻訳」かツールバーのボタンでオン）。閉じる・バーの「翻訳」・ツールバーのボタンでオフ。置き換えた段落にマウスを乗せると原文の吹き出し。
+- **前提**: 「置き換え翻訳」と同じ（自分のポートの llama-server）。`unreachable` は「接続エラー」と同じく自分の llama-server を止めた後。
+- **操作**: `timeout 900 node scripts/verify-reader-translate.ts <replace|bilingual> <evidenceDir> --server=http://127.0.0.1:18080 [pageUrl]`、`timeout 300 node scripts/verify-reader-translate.ts unreachable <evidenceDir> --server=http://127.0.0.1:18080`。最初の開きはショートカットのキー入力、以降は `toggleReaderTab(tabId)`。ツールバーのボタンは `Extensions.triggerAction`、バーと吹き出しは `Input.dispatchMouseEvent`。送信は service worker のセッションの Network（`recordWorkerRequests`）で数え、`/v1/completions` のプロンプトの最後の `input` を文字にして（タグを除く）段落の原文と照合する。
+- **期待と観測**（`reader-translate-<mode>.json` の `checks` と `observed`）:
+  - `optionsSaved`: URL と表示方法が入った。
+  - `offOpens` / `offOpenOriginal`: 翻訳オフで開くと（helper が控えたのはこの 1 回目の開き）、リーダーの `article` に目印 0、バー `data-state="off"`・`aria-pressed="false"`・押せる、送信 0、バッジ空。helper は `<html>` の子の変化を見て、リーダーの host が付くたびに（翻訳の応答が届く前に）その `article` の `innerHTML`・`textContent`・段落の原文と `code`・`strong`・リンクを控える（以下の「原文」。開くたびにページの写しなので、ページが自分で変わる react.dev では開くごとに控え直す）。
+  - `badgeOn`: ページでオン（`triggerAction`）にしてバッジ `ON`。ページの段落が 3 つ訳されたところでリーダーを開く。
+  - `readerTranslated`: 翻訳オンで開いたリーダーの段落数が原文と同じで、訳されたか ⚠ が 9 割以上、訳した段落はすべて日本語。置き換えでは差し込み 0、対訳では置き換え 0。`observed.whileOpen.reader.failed` が ⚠ の数。
+  - `readerInlineKept`: 訳した段落の `code`（文字も）・`strong` の数・リンクの `href` が原文の段落と同じ（順序は問わない。訳文では語順が変わる）（`inlineChecked` はそれらを持つ段落の数、`inlineLost` に違った段落）。
+  - `readerBarOn`: バー `data-state="on"`・`aria-pressed="true"`。
+  - `noPageRequestsWhileOpen`: リーダーの host が付いた時刻（ページの `Date.now()`）以降の送信（送信の `wallTime` で分ける）が 1 つ以上あり、その原文がすべてリーダーの段落の原文のどれか（`observed.whileOpen.notReaderSources` が空）、開いた直後に helper がページの body に足した一意な英文の段落（`ADDED_TEXT`）は送られず訳されず、ページの訳済みの段落数が開いた直後（`pageTranslatedAtOpen`。開く前に送った応答が開く処理と同時に届くことがある）から閉じるまで変わらない。
+  - `readerCopiesOriginal`: 翻訳オン（ページで訳済みの段落あり）で 2 回目に開いたとき、控えた段落の原文の一覧に日本語（ひらがな・カタカナ・漢字）がなく、基準ページでは翻訳オフで開いたとき（`observed.offOpen`）の一覧と完全に同じ（react.dev はページが自分で変わるので一覧の比較はしない）。開いている間の送信の原文にも日本語がない。
+  - `noDuplicateSendsInReader`: 開いている間の送信のうち、retry（`temperature` 0.3、`src/background.ts`）を除いた最初の送信（`temperature` 0）の原文が 1 つ以上で、重複がない。
+  - リーダーの中の吹き出し（`replace` のとき。`observed.bubbles`）: 画面の 1 画面分より下にある、訳した 2 行以上の `p` に乗せる。
+    - `readerBubbleShowsOriginal`: 0.2 秒では出ず、0.7 秒後に 1 つ出る。`<html>` 直下でリーダーの host より後の目印付きの open な shadow host（z-index 2147483647）で、中身が原文、`font-size` と幅・左端が段落と同じ、`user-select` が `none` でない、`font-family` がリーダーの `article` と同じ、段落に `title` がない。
+    - `readerBubblePlacement`: 段落を中央に置くと `bubbleSide` の期待どおり、下端に置くと上。
+    - `readerBubbleStaysOnHover` / `readerBubbleHidesOnLeave`: 吹き出しへ動かして 1 秒後も残り、左の余白へ動かして 1 秒後に消える。
+    - `readerBubbleBlack` / `readerBubbleSepia` / `readerBubbleWhite`: バーで背景を変えた後に出した吹き出しの中の `div` の `background-color` / `border-top-color` / `color` が、黒 `rgb(45, 45, 45)` / `rgb(90, 90, 90)` / `rgb(230, 230, 230)`、セピア `rgb(255, 246, 204)` / `rgb(184, 146, 26)` / `rgb(62, 47, 34)`、白 `rgb(255, 246, 204)` / `rgb(184, 146, 26)` / `rgb(31, 31, 31)`。
+    - `readerBubbleGothic` / `readerBubbleMincho`: `font-family` がリーダーの `article` と同じで、ゴシック（`"Hiragino Sans"…`）・明朝（`"Hiragino Mincho ProN"…`）。
+  - `closeRemovesReader`: 閉じるとリーダーの host と吹き出しが 0。
+  - `pageResumes`: 閉じた後に送信があり、ページの訳済みの段落が増え、開いた直後に訳済みだった段落の原文（訳されていない段落にない文字）を送らない（`observed.afterClose.resentTranslatedBeforeOpen` が空）。`addedTranslatedAfterClose`: 足した段落が閉じた後に送られ、訳されたか ⚠。
+  - 元のページの吹き出し（`replace` のとき。閉じた後のページで）:
+    - `pageBubbleInsideShadowDom`（`observed.pageBubbleInShadow`）: 画面内の置き換えた段落の先頭に、helper が open な shadow root を持つ空の `span`（中身は shadow の中の `b` だけ。段落の light DOM の文字は変えないので訳し直されない）を足し、その `b` にマウスを乗せると 0.9 秒後に吹き出しが 1 つ出て中身がその段落の原文、段落は置き換えたまま。
+    - `noPageBubbleOverReader`（`observed.pageBubbleOverReader`）: 別の置き換えた段落にマウスを乗せ、0.5 秒以内（`openedAfterMs`。乗せてからリーダーの host が付くまで）にショートカットで開き、マウスを動かさずに 1 秒待つと、吹き出しの host が 0。
+  - `barOffOriginal`: 開き直して訳した後、バーの「翻訳」を押すと、`article` の `innerHTML`・`textContent` が原文と同じ、目印・吹き出し 0、バー `off`、バッジ空。
+  - `toolbarOnTranslatesReader`: ツールバーのボタンでオンにすると、バッジ `ON`、バー `on`、リーダーの中が訳される。
+  - `offClosedClean`: オフにして閉じると、リーダーの `article` が原文、目印・吹き出し 0、ページの全段落の `outerHTML`（`class` 属性を除く。react.dev は「On this page」の強調をスクロールで動かす）が翻訳前と同じ（helper が足した段落は除く。`pre` はページ自身が置き換える react.dev があるので比べない。`pre` を訳さないことは「置き換え翻訳」の `preUnchanged`）、ページの目印 0、バッジ空。
+  - `unreachable`: `noticeAboveReader`（リーダーを開いた状態でオンにすると、設定の URL を含む「接続できません」の通知が `<html>` 直下に出て、通知の中心で `document.elementFromPoint` が通知を返す）、`badgeError`（`ERR`）、`barError`（バー `data-state="error"`・`aria-pressed="true"`）、`offClosedClean`。
+  - `allRequestsToServer`: 送信は設定の URL か、設定画面を開いたときの既定 URL の `/v1/models` だけ。
+- **証拠**: `reader-translate-<mode>.json`、`reader-translate-<mode>-{options,0-before,1-off-open}.png`、`replace`/`bilingual` は `-2-reader-translated.png`・`-5-closed-page.png`・`-6-bar-off.png`・`-7-toolbar-on.png`、`replace` は `-3-bubble-{black,sepia,white,white-mincho}.png`・`-4-bubble-above.png`・`-5b-page-bubble-shadow.png`・`-5c-hover-then-open.png`、`unreachable` は `-2-error.png`。
+- **注意**: 送信の照合は文字の一致なので、同じ文字の段落がページとリーダーの両方にあると区別できない（開いている間の送信がページ向けでないことは、足した段落が送られないことと訳済みの数が変わらないことでも見る）。開く前に送った応答は捨てられ、閉じた後に送り直される。吹き出しの文字の選択とコピーは手動の節。対訳では吹き出しを出さない。
 
 ## ツールバーのボタンの実クリック（手動）
 
@@ -139,8 +173,8 @@
 
 ## 原文の吹き出しからのコピー（手動）
 
-- **到達方法**: ヘッドありの Chrome（一時プロファイル）で `dist/` を読み込み、基準ページを置き換え表示で訳して、訳した段落にマウスを乗せる。
-- **期待**: 吹き出しの文字をドラッグで選んで ⌘C でコピーでき、貼り付けると原文になる。吹き出しの外までドラッグして選択しても吹き出しが消えないことも見る（ヘッドありの Chrome、人が 1 回）。
+- **到達方法**: ヘッドありの Chrome（一時プロファイル）で `dist/` を読み込み、基準ページを置き換え表示で訳して、訳した段落にマウスを乗せる。リーダーの中でも、翻訳オンでリーダーを開き、訳した段落にマウスを乗せる。
+- **期待**: 吹き出しの文字をドラッグで選んで ⌘C でコピーでき、貼り付けると原文になる（元のページとリーダーの中の両方）。吹き出しの外までドラッグして選択しても吹き出しが消えないことも見る（ヘッドありの Chrome、人が 1 回）。
 - **証拠**: 確認した人・日時・結果を `run.md` に書く。
 
 ## 通信先（静的な確認）
