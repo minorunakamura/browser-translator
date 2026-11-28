@@ -5,6 +5,7 @@ import type {
   TranslateRequest,
   TranslateResponse,
 } from "./background.ts";
+import { startBubble } from "./bubble.ts";
 import { loadSettings } from "./settings.ts";
 import {
   type HistoryPair,
@@ -30,10 +31,9 @@ interface Paragraph {
   source: string;
   // Reported by the IntersectionObserver; visible paragraphs are translated first.
   visible: boolean;
-  // Replace display, after the translation was written: its text, and the page's own children and title.
+  // Replace display, after the translation was written: its text and the page's own children.
   shown?: string;
   original?: Node[];
-  title?: string | null;
   // The bilingual translation or the failure marker inside the paragraph.
   added?: Element;
 }
@@ -192,10 +192,8 @@ function start(serial: boolean, bilingual: boolean): void {
       return;
     }
     p.original = [...p.el.childNodes];
-    p.title = p.el.getAttribute("title");
     p.el.replaceChildren(...nodes);
     p.el.setAttribute(MARK, "translated");
-    p.el.title = p.source; // hovering shows the original text
     p.shown = textOf(p.el);
   }
 
@@ -319,8 +317,6 @@ function start(serial: boolean, bilingual: boolean): void {
       p.shown = undefined;
       p.original = undefined;
       p.el.removeAttribute(MARK);
-      if (p.title === null) p.el.removeAttribute("title");
-      else if (p.title !== undefined) p.el.title = p.title;
     } else if (
       textOf(p.el) === p.source &&
       // The page redrew the paragraph with the same text and dropped the translation or failure marker.
@@ -362,8 +358,19 @@ function start(serial: boolean, bilingual: boolean): void {
 
   addEventListener("pagehide", onPageHide);
 
+  // Hovering a replaced paragraph shows its original text; the bilingual display shows it already.
+  const stopBubble = bilingual
+    ? () => {}
+    : startBubble((target) => {
+        const el = target.closest(`[${MARK}="translated"]`);
+        const p = el ? byElement.get(el) : undefined;
+        // A paragraph whose translation the page replaced has no original to show.
+        return p?.shown === undefined ? undefined : p;
+      });
+
   globalThis.browserTranslatorOff = () => {
     active = false;
+    stopBubble();
     removeEventListener("pagehide", onPageHide);
     mutations.disconnect();
     intersection.disconnect();
@@ -373,9 +380,6 @@ function start(serial: boolean, bilingual: boolean): void {
       if (p.shown === undefined || textOf(p.el) !== p.shown) continue;
       p.el.replaceChildren(...(p.original ?? []));
       p.el.removeAttribute(MARK);
-      if (p.title === null || p.title === undefined)
-        p.el.removeAttribute("title");
-      else p.el.title = p.title;
       p.shown = undefined;
     }
     for (const el of inserted) el.remove();

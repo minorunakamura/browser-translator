@@ -1,6 +1,6 @@
 # Feature Map（browser-translator）
 
-対象: 基準ページでの置き換え翻訳（オン・オフ・ホバー）と対訳表示、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映。
+対象: 基準ページでの置き換え翻訳（オン・オフ・原文の吹き出し）と対訳表示、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映。
 対象外（まだ手順がない）: 直列と並列の訳語統一の比較、用語集の語形の違い、react.dev 以外の React のページ、ページが訳文の段落を書き換えたときの訳し直し（react.dev では起きなかった）。訳文の品質の定量評価、Chrome 以外のブラウザ。
 
 この Map は手順と期待結果だけを持つ。各回の観測結果は `.pi/verification-evidence/<run>/run.md` に書く。
@@ -18,10 +18,13 @@
   - `knowledgeEngine` / `guardrails`: 「The knowledge engine.」「Keep guardrails cheap.」の段落で `code` が `agent.knowledge.search()` / `OFF_TOPIC` のまま 1 つ残り、`strong` が 1 つ残る。自然な位置かは `observed.*.html` とスクリーンショットで目で確かめる。
   - `cugaLink`: 「CUGA (ConfigUrable …」の段落に `href="https://cuga.dev"` の `a`（中身 CUGA）が残る。
   - `noLeftoverTags`: 訳された段落の `code` の外に、送ったタグの文字列（`<a>`・`<code id="2">`・`</strong>` など）が残っていない（`code` の中の `<h1>` などは原文の文字なので数えない。タグの抜け・重複がある訳は採用されないため、目印のない段落は抜け・重複がない）。`observed.failed` に訳せなかった段落（原文のまま ⚠ の目印）があれば一覧される。
-  - `hoverShowsOriginal`: 訳した段落の `title` が原文（マウスを乗せるとツールチップで原文が出る）。
-  - `offRestoresDom` / `offBadgeCleared`: オフ後、対象の全段落と `pre` の `textContent` と `outerHTML`（要素自身の `title` 属性を含む）が翻訳前と一致し、拡張の目印（`data-browser-translator`）が 0、バッジが空。
-- **証拠**: `translate.json`、`translate-options.png`（`--server` のとき）、`translate-0-before.png`、`translate-1-top.png`、`translate-2-{cuga,knowledge,guardrails}.png`、`translate-3-off.png`。
-- **注意**: 訳文はモデルの出力なので、run ごとに文言は変わる。中に段落を持つ `li`（目次など）の直下の文字は訳さない（content.ts の shortcut）。ホバーはブラウザのツールチップのため、スクリーンショットには写らない（`title` 属性で確認する）。
+  - 原文の吹き出し（「Keep guardrails cheap.」の段落。CDP の `Input.dispatchMouseEvent` の `mouseMoved` で乗せる。観測値は `bubble`）:
+    - `bubbleShowsOriginal`: 乗せて 0.2 秒では出ておらず、0.7 秒後に吹き出しが 1 つ出る。`<html>` の直下の目印付きの要素の open な Shadow DOM の中身が原文（翻訳前に page の main world の `WeakMap` に控えた段落の文字）、`font-size` が段落の計算済みの値と同じ、幅と左端が段落と同じ（誤差 1px）、`user-select` が `none` でない。段落に `title` 属性がない。
+    - `bubblePlacement`: 段落を画面の中央に置くと吹き出しは段落の下、画面の下端に置く（下に入らない）と段落の上。どちらも「下に入れば下、入らず上に入れば上」の期待どおり。
+    - `bubbleStaysOnHover`: マウスを吹き出しの中央へ動かして 1 秒後も残る。`bubbleHidesOnLeave`: 段落と吹き出しの外（左の余白）へ動かして 1 秒後に消える。
+  - `offRestoresDom` / `offBadgeCleared`: オフ後、対象の全段落と `pre` の `textContent` と `outerHTML` が翻訳前と一致し（拡張は段落の `title` 属性に触れない）、吹き出しを含む拡張の目印（`data-browser-translator`）が 0、バッジが空。
+- **証拠**: `translate.json`、`translate-options.png`（`--server` のとき）、`translate-0-before.png`、`translate-1-top.png`、`translate-2-{cuga,knowledge,guardrails}.png`、`translate-4-bubble.png`（段落の下の吹き出し）、`translate-5-bubble-above.png`（段落の上の吹き出し）、`translate-3-off.png`。
+- **注意**: 訳文はモデルの出力なので、run ごとに文言は変わる。中に段落を持つ `li`（目次など）の直下の文字は訳さない（content.ts の shortcut）。吹き出しの見た目（白地・濃い文字・影）は `translate-4-bubble.png` / `translate-5-bubble-above.png` で目で確かめる。吹き出しの文字の選択とコピーそのものは CDP では見ない（手動の節）。対訳表示では吹き出しを出さない。
 
 ## 対訳表示（基準ページ）
 
@@ -92,6 +95,12 @@
 - **到達方法**: ヘッドありの Chrome（一時プロファイル）で `dist/` を読み込み、基準ページでツールバーの拡張のボタン（パズルのアイコンから固定してもよい）を押す。
 - **期待**: バッジが `ON` になり本文が日本語になる。もう一度押すと原文に戻り、バッジが消える。
 - **証拠**: 確認した人・日時・結果を `run.md` に書く。CDP の `Extensions.triggerAction` は同じ `chrome.action.onClicked` を発火するが、画面上のクリックそのものではない。
+
+## 原文の吹き出しからのコピー（手動）
+
+- **到達方法**: ヘッドありの Chrome（一時プロファイル）で `dist/` を読み込み、基準ページを置き換え表示で訳して、訳した段落にマウスを乗せる。
+- **期待**: 吹き出しの文字をドラッグで選んで ⌘C でコピーでき、貼り付けると原文になる。吹き出しの外までドラッグして選択しても吹き出しが消えないことも見る（ヘッドありの Chrome、人が 1 回）。
+- **証拠**: 確認した人・日時・結果を `run.md` に書く。
 
 ## 通信先（静的な確認）
 

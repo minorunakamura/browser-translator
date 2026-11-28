@@ -59,10 +59,10 @@ const OBSERVE = `(() => {
     for (const m of copy.querySelectorAll(ins)) m.remove();
     return copy.textContent.replace(/\\s+/g, " ").trim();
   };
-  // A replaced paragraph's original text is its title.
-  const source = (el) => el.getAttribute("data-browser-translator") === "translated" ? el.title : bare(el);
+  // A replaced paragraph had English text when the extension took it, so it stays a candidate.
+  const replacedOrEnglish = (el) => el.getAttribute("data-browser-translator") === "translated" || /[A-Za-z]/.test(bare(el));
   const article = [...document.querySelectorAll("article p, article li, article h1, article h2, article h3, article h4")]
-    .filter((el) => !el.closest("pre, code") && !el.closest(ins) && /[A-Za-z]/.test(source(el)))
+    .filter((el) => !el.closest("pre, code") && !el.closest(ins) && replacedOrEnglish(el))
     .filter((el) => ![...el.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, pre, ul, ol, div, table, blockquote")]
       .some((b) => !b.closest(ins) && /\\S/.test(b.textContent)));
   const shows = (el) =>

@@ -54,13 +54,20 @@ if (serverModels.length < 2) {
 }
 const chosenModel = serverModels[1];
 
-// Runs in the page: translated/failed paragraph counts and the translated paragraphs (source title and text).
+// Runs in the page before translation: each paragraph's text, kept in the page's main world and not in the DOM.
+const SOURCES = `(() => {
+  window.__browserTranslatorVerifySources = new WeakMap();
+  for (const el of document.body.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6"))
+    window.__browserTranslatorVerifySources.set(el, el.textContent.replace(/\\s+/g, " ").trim());
+})()`;
+
+// Runs in the page: translated/failed paragraph counts and the translated paragraphs (source from SOURCES and text).
 const OBSERVE = `(() => {
   const translated = [...document.querySelectorAll('[data-browser-translator="translated"]')];
   const failed = [...document.querySelectorAll('[data-browser-translator="inserted"]')]
     .filter((m) => m.parentElement && m.parentElement.closest("p, li, h1, h2, h3, h4, h5, h6"));
   return {
-    translated: translated.map((el) => ({ source: el.title, text: el.textContent })),
+    translated: translated.map((el) => ({ source: window.__browserTranslatorVerifySources.get(el) ?? "", text: el.textContent })),
     failed: failed.length,
   };
 })()`;
@@ -184,6 +191,7 @@ try {
     );
     const tab = targetInfos.find((t) => t.url === pageUrl)?.targetId;
     if (!tab) throw new Error("tab target of the page not found");
+    await evaluate(cdp, page, SOURCES);
     const from = requests.length;
     const t0 = Date.now();
     await cdp.send("Extensions.triggerAction", {
