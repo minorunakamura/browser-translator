@@ -131,6 +131,24 @@ async function toggleTab(tabId: number): Promise<void> {
   });
 }
 
+// The reader's context menu item and shortcut: the command is set in the content script's world first, so this
+// injection opens or closes the reader instead of toggling translation mode.
+async function toggleReaderTab(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      globalThis.browserTranslatorCommand = "reader";
+    },
+  });
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+}
+
+const READER_MENU_ID = "reader";
+const READER_COMMAND = "toggle-reader";
+
 const BADGE: Record<StatusMessage["state"], { text: string; color: string }> = {
   on: { text: "ON", color: "#1a73e8" },
   off: { text: "", color: "#1a73e8" },
@@ -152,6 +170,24 @@ async function setBadge(
 
 chrome.action.onClicked.addListener((tab) => {
   if (tab.id !== undefined) toggleTab(tab.id).catch(console.error);
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: READER_MENU_ID,
+    title: "リーダー表示",
+    contexts: ["action", "page"],
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === READER_MENU_ID && tab?.id !== undefined)
+    toggleReaderTab(tab.id).catch(console.error);
+});
+
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === READER_COMMAND && tab?.id !== undefined)
+    toggleReaderTab(tab.id).catch(console.error);
 });
 
 chrome.runtime.onMessage.addListener(
@@ -179,4 +215,5 @@ Object.assign(globalThis, {
   listModels,
   complete,
   buildPfml3Prompt,
+  toggleReaderTab,
 });

@@ -1,11 +1,15 @@
 // Content script, injected by the toolbar button: the first injection turns translation mode on,
 // the next one in the same document turns it off and restores the original DOM.
+// The reader's context menu item and shortcut inject it after setting browserTranslatorCommand to "reader",
+// which opens or closes the reader instead.
 import type {
   StatusMessage,
   TranslateRequest,
   TranslateResponse,
 } from "./background.ts";
 import { startBubble } from "./bubble.ts";
+import { noticeElement } from "./notice.ts";
+import { toggleReader } from "./reader.ts";
 import { loadSettings } from "./settings.ts";
 import {
   type HistoryPair,
@@ -41,6 +45,8 @@ interface Paragraph {
 // Survives between injections into the same document; set while translation mode is on.
 declare global {
   var browserTranslatorOff: (() => void) | undefined;
+  // Set by the service worker right before injecting this script; read and cleared once.
+  var browserTranslatorCommand: "reader" | undefined;
 }
 
 function status(s: StatusMessage["state"]): void {
@@ -161,12 +167,12 @@ function start(serial: boolean, bilingual: boolean): void {
     if (!active) return;
     active = false; // stop sending; the next button press turns the mode off and removes the notice
     status("error");
-    const notice = document.createElement("div");
-    notice.textContent = `Browser Translator: llama-server に接続できません（${message}）`;
-    notice.style.cssText =
-      "position:fixed;top:12px;right:12px;z-index:2147483647;max-width:420px;padding:10px 14px;" +
-      "background:#d93025;color:#fff;font:14px/1.5 sans-serif;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.3)";
-    insertMarked(notice, document.body);
+    insertMarked(
+      noticeElement(
+        `Browser Translator: llama-server に接続できません（${message}）`,
+      ),
+      document.body,
+    );
   }
 
   function markFailed(p: Paragraph, reason: string): void {
@@ -389,7 +395,10 @@ function start(serial: boolean, bilingual: boolean): void {
   status("on");
 }
 
-if (globalThis.browserTranslatorOff) globalThis.browserTranslatorOff();
+const command = globalThis.browserTranslatorCommand;
+globalThis.browserTranslatorCommand = undefined;
+if (command === "reader") toggleReader();
+else if (globalThis.browserTranslatorOff) globalThis.browserTranslatorOff();
 else {
   // A second injection while settings load cancels the pending start; no "off" status since the badge is not on yet.
   let cancelled = false;

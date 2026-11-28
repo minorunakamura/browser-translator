@@ -1,6 +1,6 @@
 # Feature Map（browser-translator）
 
-対象: 基準ページでの置き換え翻訳（オン・オフ・原文の吹き出し）と対訳表示、白いページ・暗いページでの吹き出しの色、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映。
+対象: 基準ページでの置き換え翻訳（オン・オフ・原文の吹き出し）と対訳表示、白いページ・暗いページでの吹き出しの色、React のページ（react.dev）での置き換え・対訳、あとから追加された段落（MutationObserver）、SPA の URL 変更での継続、リロードでの終了、llama-server に接続できないときの表示、設定画面（URL・モデル・送り方・表示方法・用語集）とその反映、リーダー表示（翻訳なし）。
 対象外（まだ手順がない）: 直列と並列の訳語統一の比較、用語集の語形の違い、react.dev 以外の React のページ、ページが訳文の段落を書き換えたときの訳し直し（react.dev では起きなかった）。訳文の品質の定量評価、Chrome 以外のブラウザ。
 
 この Map は手順と期待結果だけを持つ。各回の観測結果は `.pi/verification-evidence/<run>/run.md` に書く。
@@ -103,11 +103,39 @@
 - **証拠**: `settings.json`、`settings-options-{1,2,3}.png`（保存後の設定画面）、`settings-1-parallel-model-glossary.png`、`settings-2-serial.png`、`settings-3-parallel-again.png`。
 - **注意**: 訳文はモデルの出力なので、`glossaryApplied` は run によって変わりうる（2B で確認。0.8B では glossary を送っても従わない段落があった）。`pi` が `api` に当たらないことの網羅は `test/glossary.test.ts`。直列の訳語統一が並列より良いかは対象外。
 
+## リーダー表示
+
+- **到達方法**: ツールバーの拡張のボタンかページを右クリックして「リーダー表示」、またはショートカット `Alt+Shift+R`（Mac は Option+Shift+R）。同じ操作でもう一度押すと閉じる。✕・Esc でも閉じる。
+- **前提**: 外部サイト（基準ページ、https://react.dev/learn 、https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/table ）にアクセスできること。llama-server は不要（リーダーの中はまだ翻訳しない）。
+- **操作**: `timeout 400 node scripts/verify-reader.ts <evidenceDir>`。各ページの最初の開閉は CDP のキー入力でショートカットを押し、以降は service worker の `toggleReaderTab(tabId)` を呼ぶ。バー・リンクは `Input.dispatchMouseEvent`、Esc は `Input.dispatchKeyEvent`。
+- **期待と観測**（`reader.json` の `checks` と `observed`）:
+  - `commandAssigned`: `chrome.commands.getAll()` に `toggle-reader` があり、ショートカットが割り当てられている（Mac では `⌥⇧R`）。
+  - `shortcutOpens` / `reactRendered`: ショートカットで `<html>` 直下の目印付きの `position:fixed` の要素（open な Shadow DOM）が 1 つでき、見出し・段落・`pre` が描かれる。
+  - `firstOpenBlack` / `defaultLook`: 保存値なし（一時プロファイル）で初めて開くと背景 `rgb(30, 30, 30)`・文字 `rgb(212, 212, 212)`、ゴシック・18px・40em（720px）。`translateButtonInert`: バーの翻訳ボタンは押せない（#14 では動かさない）。
+  - `reactPreSame`: react.dev/learn のリーダーの `pre` の数が元のページと同じで、中に `p`・`div` がなく、各 `pre` の行数・各行の字下げと文字が元のページ（`.cm-line` ごと）と一致する。行の間が空いていないかは `reader-react-2-code.png` を目で確かめる。
+  - `onlyReaderScrolls`: ホイールでリーダーの中がスクロールし、ページの `scrollY` は変わらない。
+  - `barTheme` / `barFont` / `barSize` / `barWidth`: セピア・白の背景色と文字色、明朝（`pre` は等幅のまま）、文字 20px、行幅 45em（900px）が計算済みスタイルに出る。`lookStored`: `chrome.storage.local` の `reader` に入る。`reopenSameLook`: ✕ で閉じて開き直すと同じ値。`observed.fonts`: ゴシック・明朝それぞれの `CSS.getPlatformFontsForNode`（実際のフォント名）。
+  - `closeButtonCloses` / `closeKeepsScroll` / `toggleCloses`: ✕ でも、同じ切り替えでも閉じ、ページの `scrollY` は開く前と同じ。
+  - `escCloses` / `escNotPassed` / `escKeyupNotPassed` / `escKeepsScroll`: リーダーの文字を選んだ状態で Esc を押すと閉じ、helper がページに置いた `keydown` の目印（document の capture・bubble、window）も `keyup` の目印（document の capture、window の bubble）も Esc を受け取っていない。`observed.escapeAfterClose` に、閉じた後の Esc は `keydown`・`keyup` ともページに届くことを残す。ページが拡張より先に window の capture に置いた listener には届く（README の制限）。
+  - `shiftTabEscKeepsScroll` / `shiftTabCloseButtonKeepsScroll`: ページを `scrollY` 400 にして開き、CDP のキー入力で Shift+Tab を 3 回送ってフォーカスを背後のページの要素へ移す（`observed.shiftTab.*.whileOpen` にそのときのページの `scrollY` とフォーカス先）。Esc・✕ で閉じると、ページの `scrollY` が開く前と同じ。
+  - `hashLinkClosesAndMoves` / `linkClosesAndMoves`: リーダーの `#…` のリンクと別ページのリンクを押すと、リーダーが閉じて元のページ（同じタブ）がそこへ移る。
+  - `bfcacheCloses`: リーダーを開いたまま移動して履歴で戻ると（bfcache。`observed.bfcache.restoredFromCache`）、リーダーは閉じている。
+  - `hfRendered` / `mdnRendered`（と `*Closed`）: 基準ページと MDN の `table` のページでも開いて描かれ（MDN は表あり）、閉じると 0。`observed.{react,hf,mdn}` に元のページの本文の範囲とリーダーの見出し・見出しのアンカー・表・画像・`pre` の数（記録値）。
+  - `emptyNotOpened` / `emptyNoticeGoes`: 本文のないページ（既定は Google のロゴ画像の URL。`--empty=` で変えられる）では開かず、右上に「このページはリーダー表示にできません」の通知が出て、数秒後に目印 0。
+- **証拠**: `reader.json`、`reader-react-{1-open,2-code,3-white-mincho,4-link}.png`、`reader-hf-{1-open,2-code}.png`、`reader-mdn-{1-open,2-table}.png`、`reader-empty-notice.png`。
+- **注意**: 右クリックメニューを CDP から押す手段はない（手動の節）。ショートカットは CDP のキー入力で発火するが、物理キーではない。Readability の抽出結果はページの変更で変わる。リーダーの中の翻訳・吹き出しは #15。
+
 ## ツールバーのボタンの実クリック（手動）
 
 - **到達方法**: ヘッドありの Chrome（一時プロファイル）で `dist/` を読み込み、基準ページでツールバーの拡張のボタン（パズルのアイコンから固定してもよい）を押す。
 - **期待**: バッジが `ON` になり本文が日本語になる。もう一度押すと原文に戻り、バッジが消える。
 - **証拠**: 確認した人・日時・結果を `run.md` に書く。CDP の `Extensions.triggerAction` は同じ `chrome.action.onClicked` を発火するが、画面上のクリックそのものではない。
+
+## リーダー表示の右クリックメニューとショートカット（手動）
+
+- **到達方法**: ヘッドありの Chrome（一時プロファイル）で `dist/` を読み込み、基準ページを開く。
+- **期待**: ツールバーの拡張のボタンを右クリックすると「リーダー表示」が出て、選ぶとリーダーが開く。もう一度選ぶと閉じる。ページの右クリックでも同じ。Option+Shift+R（Mac）でも開閉できる。
+- **証拠**: 確認した人・日時・結果を `run.md` に書く。
 
 ## 原文の吹き出しからのコピー（手動）
 

@@ -1,6 +1,6 @@
 ---
 name: verify-project
-description: browser-translator（Chrome MV3 拡張 + ローカル llama-server）の実動作確認。dist/ を一時プロファイルの Chrome に読み込み、所有するポートの llama-server（router モード）で基準ページと React のページ（react.dev）を翻訳し、設定画面の操作・service worker の送信内容・DOM の照合とスクリーンショットを残して後始末する。拡張の翻訳・表示（置き換え・対訳・原文の吹き出し）・あとから追加された段落・SPA での継続・接続エラー・設定（URL・モデル・送り方・表示方法・用語集）を変更したときに使う。
+description: browser-translator（Chrome MV3 拡張 + ローカル llama-server）の実動作確認。dist/ を一時プロファイルの Chrome に読み込み、所有するポートの llama-server（router モード）で基準ページと React のページ（react.dev）を翻訳し、リーダー表示（翻訳なし）を開閉し、設定画面の操作・service worker の送信内容・DOM の照合とスクリーンショットを残して後始末する。拡張の翻訳・表示（置き換え・対訳・原文の吹き出し）・リーダー表示（右クリックメニュー・ショートカット・バー・見た目の保存・Esc・リンク）・あとから追加された段落・SPA での継続・接続エラー・設定（URL・モデル・送り方・表示方法・用語集）を変更したときに使う。
 ---
 
 # verify-project（browser-translator）
@@ -53,6 +53,9 @@ description: browser-translator（Chrome MV3 拡張 + ローカル llama-server�
 8. 接続エラーの表示（Feature Map「接続エラー」）: 自分の llama-server を PID で止め（`kill $(cat $EVID/llama-server.pid)`）、`lsof -iTCP:18080 -sTCP:LISTEN` が空になったのを確かめてから:
    `node scripts/verify-translate.ts unreachable $EVID --server=http://127.0.0.1:18080`
    exit 0 で、`unreachable.json` の `checks` がすべて true。`unreachable-1-on.png` に赤い通知（URL を含む）が写っている。
+8a. リーダー表示（Feature Map「リーダー表示」。llama-server は不要なので、手順 3 の前後どちらでもよい）:
+   `timeout 400 node scripts/verify-reader.ts $EVID`
+   exit 0 で、`$EVID/reader.json` の `checks` がすべて true。`reader-react-2-code.png` でコードブロックの行の間が空いていないこと、`reader-mdn-2-table.png` で表が描かれていることを目で確かめる。`observed.react`・`observed.hf`・`observed.mdn` の見出し・アンカー・表・画像・`pre` の数と `observed.fonts`（実際のフォント名）を `run.md` に書く。1 回 2 分ほど。
 9. 実行記録 `$EVID/run.md` を書く: 対象機能と入口、source の版と未コミット変更、前提（Chrome・llama-server の版、モデル）、操作、期待結果と観測結果、成否、未確認の範囲。
 10. 後始末: 自分が起動した llama-server だけを PID で止める（プロセス名で一括終了しない）。Chrome と一時プロファイルは helper が終了時に閉じて消す（`ls -d ${TMPDIR:-/tmp}/bt-chrome-*` で残りが無いか確かめる）。証拠は消さない。後始末の後に `$EVID` の JSON と PNG が読めることを確かめる。
 
@@ -68,6 +71,7 @@ description: browser-translator（Chrome MV3 拡張 + ローカル llama-server�
 - `scripts/verify-translate.ts <translate|bilingual|unreachable> <evidenceDir> [pageUrl] [--server=<url>]`: `--server` があれば先に設定画面でその URL を保存する（`bilingual` は表示方法「対訳」も保存する）。新しいタブで基準ページを開き、翻訳前に段落の原文を page の main world の `WeakMap` に控え（ページの DOM は変えない）、CDP の `Extensions.triggerAction`（ツールバーのボタンを押したときと同じく `chrome.action.onClicked` が発火する）で翻訳モードを切り替え、DOM を照合する。`translate` では CDP の `Input.dispatchMouseEvent` で訳した段落にマウスを乗せ、原文の吹き出し（Shadow DOM の中身・`font-size`・幅・位置・`user-select`・色、吹き出しへ移っても残る、離れると消える）を観測する。JSON とスクリーンショットを保存する。
 - `scripts/verify-bubble-colors.ts <evidenceDir> --server=<url> [pageUrl]`: 設定画面で URL と表示方法「置き換え」を保存し、React のページ（既定 https://react.dev/learn ）を CDP の `Emulation.setEmulatedMedia` で `prefers-color-scheme: light` と `dark` にしてそれぞれ開いて訳し、訳した段落にマウスを乗せて吹き出しを撮る。吹き出しの計算済みの色と body の背景色を `bubble-colors.json` に、スクリーンショットを `bubble-colors-{light,dark}.png` に保存する。
 - `scripts/verify-react.ts <replace|bilingual> <evidenceDir> --server=<url> [pageUrl] [--link=<path>]`: 設定画面で URL と表示方法を保存し、React のページ（既定 https://react.dev/learn ）で (1) 翻訳（`code` の中に `<` を含む段落が ⚠ ではなく訳されたかを含む）、(2) 待つ・スクロール・ホバーの後に React が原文に戻したか、(3) ページ側から段落を 1 つ足して訳されるか（送信が 1〜2 回で止まるか）と、その段落をページが同じ本文で描き直したとき訳文が戻るか、(4) ページ内のリンク（既定 `/learn/describing-the-ui`）を CDP のマウス操作で押して SPA の移動（同じ document のまま）後もバッジ `ON` で新しい内容が訳されるか、(5) 変化がない間に送信が出ないか、(6) オフ、(7) オンにしてリロードで翻訳モードが終わるか、(8) オンにして通常の移動の後に履歴で戻ったとき（bfcache を含む）翻訳モードが終わっているか、を観測して `react-<display>.json` とスクリーンショットを保存する。
+- `scripts/verify-reader.ts <evidenceDir> [--empty=<url>]`: リーダー表示。`chrome.commands.getAll()` を記録し、各ページで最初に開くときは CDP の `Input.dispatchKeyEvent` で `Alt+Shift+R` を押す（`chrome.commands.onCommand` が発火し、利用者のショートカットと同じく activeTab が与えられる。CDP から service worker の関数を呼ぶだけでは activeTab が無く注入できない）。2 回目以降の開閉は service worker に公開した `toggleReaderTab(tabId)`（右クリックメニューとショートカットが呼ぶ関数）を呼ぶ。react.dev/learn で初回の黒・コードブロックの行と字下げ・ホイールでリーダーだけがスクロール・バーの操作（`Input.dispatchMouseEvent`）と保存・開き直し・`CSS.getPlatformFontsForNode`・✕・Esc（選択中、ページの `keydown`・`keyup` の目印）・Shift+Tab で背後へ移ったフォーカスの後の閉じたときのスクロール位置・`#…` と別ページのリンク・bfcache を、基準ページと MDN の `table` のページで本文の数を、本文のないページ（既定は画像の URL）で通知を観測し、`reader.json` とスクリーンショットを保存する。
 - `scripts/verify-connection.ts`: Work Item 1 の接続確認（service worker から `/v1/models` と `/v1/completions`）。
 
 `Extensions.triggerAction` は CDP からの発火で、画面上のボタンを物理的に押すわけではない。実際のボタンのクリックは、ヘッドありの Chrome で人が少なくとも 1 回確かめる（Feature Map の注意を参照）。
