@@ -1,4 +1,5 @@
-// Work Item 14: the reader (no translation). Drives a real Chrome with dist/ loaded and checks the overlay.
+// Work Item 14: the reader (translation inside it: scripts/verify-reader-translate.ts). Drives a real Chrome with
+// dist/ loaded and checks the overlay.
 // The first open on each page presses the reader shortcut (Alt+Shift+R) with CDP key events, which fires
 // chrome.commands.onCommand and grants activeTab like a user's shortcut does; later toggles call the service
 // worker's toggleReaderTab (the function the context menu item and the shortcut use).
@@ -112,7 +113,7 @@ const READER = `(() => {
       preLineHeight: pre && getComputedStyle(pre).lineHeight,
       preWhiteSpace: pre && getComputedStyle(pre).whiteSpace,
     },
-    translateButtonDisabled: root.querySelector('[data-action="translate"]')?.disabled,
+    translateButton: (({ disabled, dataset, textContent, ariaPressed }) => ({ disabled, state: dataset.state, pressed: ariaPressed, text: textContent }))(root.querySelector('[data-action="translate"]')),
     layerScrollTop: layer.scrollTop,
     activeIsReader: document.activeElement === host,
     scrollY,
@@ -140,7 +141,12 @@ interface ReaderObservation {
   divInPre: number;
   pre: Lines[][];
   style: Record<string, string>;
-  translateButtonDisabled: boolean;
+  translateButton: {
+    disabled: boolean;
+    state: string;
+    pressed: string;
+    text: string;
+  };
   layerScrollTop: number;
 }
 interface OriginalObservation {
@@ -364,7 +370,11 @@ try {
     reactOpen.style.fontSize === "18px" &&
     reactOpen.style.maxWidth === "720px" &&
     reactOpen.style.fontFamily.startsWith('"Hiragino Sans"');
-  checks.translateButtonInert = reactOpen.translateButtonDisabled;
+  // Opened with translation mode off: the bar's translate button can be pressed and shows off.
+  checks.translateButtonOff =
+    !reactOpen.translateButton.disabled &&
+    reactOpen.translateButton.state === "off" &&
+    reactOpen.translateButton.pressed === "false";
   const preProblems = samePre(reactOriginal.pre, reactOpen.pre);
   observed.reactPre = {
     original: reactOriginal.pre.length,
